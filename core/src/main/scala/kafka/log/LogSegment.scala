@@ -40,13 +40,16 @@ import scala.math._
  * the actual messages. The index is an OffsetIndex that maps from logical offsets to physical file positions. Each
  * segment has a base offset which is an offset <= the least offset of any message in this segment and > any offset in
  * any previous segment.
+ * 每个日志段由两个组件：日志和索引。这里的索引泛指广义的索引文件。
+ * 每个日志段都有一个起始位移值（Base Offset），该位移值是此日志段所有消息中最小的位移值
+ * 同时，该值却又比前面任何日志段中消息的位移值都大。
  *
  * A segment with a base offset of [base_offset] would be stored in two files, a [base_offset].index and a [base_offset].log file.
  *
- * @param log The file records containing log entries
- * @param lazyOffsetIndex The offset index
- * @param lazyTimeIndex The timestamp index
- * @param txnIndex The transaction index
+ * @param log The file records containing log entries 消息日志文件
+ * @param lazyOffsetIndex The offset index 位移索引文件
+ * @param lazyTimeIndex The timestamp index 时间戳索引文件
+ * @param txnIndex The transaction index 已中止事务索引文件
  * @param baseOffset A lower bound on the offsets in this segment
  * @param indexIntervalBytes The approximate number of bytes between entries in the index
  * @param rollJitterMs The maximum random jitter subtracted from the scheduled segment roll time
@@ -679,6 +682,9 @@ object LogSegment {
   }
 }
 
+/**
+ * 做统计用，主要负责为日志落盘进行计时
+ */
 object LogFlushStats extends KafkaMetricsGroup {
   val logFlushTimer = new KafkaTimer(newTimer("LogFlushRateAndTimeMs", TimeUnit.MILLISECONDS, TimeUnit.SECONDS))
 }
