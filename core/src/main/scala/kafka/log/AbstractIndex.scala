@@ -292,11 +292,13 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
 
   /**
    * Get offset relative to base offset of this index
+   * 获取该索引相对基偏移的偏移量
    * @throws IndexOffsetOverflowException
    */
   def relativeOffset(offset: Long): Int = {
     val relativeOffset = toRelative(offset)
     if (relativeOffset.isEmpty)
+      // 若无法转换成功（比如差值超过整型表示范围)，则抛异常
       throw new IndexOffsetOverflowException(s"Integer overflow for offset: $offset (${file.getAbsoluteFile})")
     relativeOffset.get
   }
@@ -344,6 +346,7 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
 
   /**
    * To parse an entry in the index.
+   * 构造OffsetPosition所需的K和V
    *
    * @param buffer the buffer of this memory mapped index.
    * @param n the slot
@@ -421,10 +424,14 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
   private def roundDownToExactMultiple(number: Int, factor: Int) = factor * (number / factor)
 
   private def toRelative(offset: Long): Option[Int] = {
+    // 计算给定的offset值与baseOffset的差值
     val relativeOffset = offset - baseOffset
+    // 校验该差值不能是负数或不能超过整型表示范围
     if (relativeOffset < 0 || relativeOffset > Int.MaxValue)
+      // 否则就返回None表示转换失败
       None
     else
+      // 校验通过，就直接返回该差值作为相对位移值
       Some(relativeOffset.toInt)
   }
 
