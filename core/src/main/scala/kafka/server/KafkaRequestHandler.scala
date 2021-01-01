@@ -93,6 +93,7 @@ class KafkaRequestHandler(id: Int,
 
 }
 
+// I/O线程池,定义了若干个I/O线程以执行真实的请求处理逻辑
 class KafkaRequestHandlerPool(val brokerId: Int,
                               val requestChannel: RequestChannel,
                               val apis: KafkaApis,

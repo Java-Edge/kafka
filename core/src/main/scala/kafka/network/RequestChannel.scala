@@ -275,7 +275,11 @@ object RequestChannel extends Logging {
     override def toString: String
   }
 
-  /** responseAsString should only be defined if request logging is enabled */
+  /*
+   * responseAsString should only be defined if request logging is enabled
+   * 仅当启用请求日志记录时才应定义responseAsString
+   * 保存返回结果的Response子类
+   * */
   class SendResponse(request: Request,
                      val responseSend: Send,
                      val responseAsString: Option[String],
@@ -326,26 +330,33 @@ class RequestChannel(val queueSize: Int, val metricNamePrefix : String, time: Ti
   })
 
   def addProcessor(processor: Processor): Unit = {
+    // 添加Processor到Processor线程池
     if (processors.putIfAbsent(processor.id, processor) != null)
       warn(s"Unexpected processor with processorId ${processor.id}")
 
     newGauge(responseQueueSizeMetricName, () => processor.responseQueueSize,
+      // 为给定Processor对象创建对应的监控指标
       Map(ProcessorMetricTag -> processor.id.toString))
   }
 
   def removeProcessor(processorId: Int): Unit = {
+    // 从Processor线程池中移除给定Processor线程
     processors.remove(processorId)
+    // 移除对应Processor的监控指标
     removeMetric(responseQueueSizeMetricName, Map(ProcessorMetricTag -> processorId.toString))
   }
 
-  /** Send a request to be handled, potentially blocking until there is room in the queue for the request */
+  /**
+   * Send a request to be handled, potentially blocking until there is room in the queue for the request
+   * 发送要处理的请求，可能会阻塞直到队列中有该请求的空间
+   */
   def sendRequest(request: RequestChannel.Request): Unit = {
     requestQueue.put(request)
   }
 
-  /** Send a response back to the socket server to be sent over the network */
+  /** 将 response 通过网络发送回 socket server*/
   def sendResponse(response: RequestChannel.Response): Unit = {
-
+    // 构造Trace日志输出字符串
     if (isTraceEnabled) {
       val requestHeader = response.request.header
       val message = response match {
@@ -375,19 +386,28 @@ class RequestChannel(val queueSize: Int, val metricNamePrefix : String, time: Ti
       case _: StartThrottlingResponse | _: EndThrottlingResponse => ()
     }
 
+    // 找出response对应的Processor线程，即request当初是由哪个Processor线程处理的
     val processor = processors.get(response.processor)
-    // The processor may be null if it was shutdown. In this case, the connections
-    // are closed, so the response is dropped.
+    /**
+     * 如果 processor 已关闭，则它可能为null。在这种情况下，连接将关闭，因此响应也将被丢弃。
+     * 将response对象放置到对应Processor线程的Response队列中
+     */
     if (processor != null) {
       processor.enqueueResponse(response)
     }
   }
 
-  /** Get the next request or block until specified time has elapsed */
+  /**
+   * Get the next request or block until specified time has elapsed
+   * 获取下一个请求或阻塞，直到指定时间过去
+   */
   def receiveRequest(timeout: Long): RequestChannel.BaseRequest =
     requestQueue.poll(timeout, TimeUnit.MILLISECONDS)
 
-  /** Get the next request or block until there is one */
+  /**
+   * Get the next request or block until there is one
+   * 获取下一个请求或阻止，直到有一个
+   */
   def receiveRequest(): RequestChannel.BaseRequest =
     requestQueue.take()
 

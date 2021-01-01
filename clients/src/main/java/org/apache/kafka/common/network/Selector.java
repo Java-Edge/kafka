@@ -56,7 +56,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * A nioSelector interface for doing non-blocking multi-connection network I/O.
+ * 基于Java NIO Selector的nioSelector接口,以执行非阻塞多通道(多连接)的网络I/O.
  * <p>
  * This class works with {@link NetworkSend} and {@link NetworkReceive} to transmit size-delimited network requests and
  * responses.
@@ -83,6 +83,17 @@ import java.util.concurrent.atomic.AtomicReference;
  * various getters. These are reset by each call to <code>poll()</code>.
  *
  * This class is not thread safe!
+ *
+ * 此类与NetworkSend和NetworkReceive一起使用，以传输大小分隔的网络请求和响应。
+ * 通过执行以下操作，可以将连接添加到与整数ID关联的nioSelector中
+ *    nioSelector.connect("42", new InetSocketAddress("google.com", server.port), 64000, 64000);
+ *
+ * connect调用不会在TCP连接创建时阻塞，因此connect方法仅开始启动连接。 成功调用此方法并不意味着已建立有效的连接。 发送请求，接收响应，处理连接完成以及在现有连接上断开连接均使用poll()调用完成。
+ *    nioSelector.send(new NetworkSend(myDestination, myBytes));
+ *    nioSelector.send(new NetworkSend(myOtherDestination, myOtherBytes));
+ *    nioSelector.poll(TIMEOUT_MS);
+ *
+ * nioSelector维护几个列表，每次调用poll()都会重置这些列表，这些列表可通过各种getter获取。 每次调用poll()都会重置它们。 此类不是线程安全的
  */
 public class Selector implements Selectable, AutoCloseable {
 
