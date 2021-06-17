@@ -60,9 +60,12 @@ object EndPoint {
 }
 
 /**
- * Part of the broker definition - matching host/port pair to a protocol
+ * broker定义的一部分-将 host/port 对与 protocol 匹配
  */
 case class EndPoint(host: String, port: Int, listenerName: ListenerName, securityProtocol: SecurityProtocol) {
+  // 构造完整监听器连接字符串
+  // 监听器名称://主机名：端口
+  // e.g.:PLAINTEXT://kafka-host:9092
   def connectionString: String = {
     val hostport =
       if (host == null)
@@ -72,6 +75,7 @@ case class EndPoint(host: String, port: Int, listenerName: ListenerName, securit
     listenerName.value + "://" + hostport
   }
 
+  // 构造Java版本的Endpoint类实例
   def toJava: JEndpoint = {
     new JEndpoint(listenerName.value, securityProtocol, host, port)
   }

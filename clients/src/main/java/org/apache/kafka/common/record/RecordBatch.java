@@ -22,6 +22,10 @@ import java.nio.ByteBuffer;
 import java.util.Iterator;
 
 /**
+ * Producer中对批量记录的一个封装，表示正在或将要被发送的一批记录
+ *
+ * 这个类不是线程安全的，当修改它时必须使用外部同步
+ *
  * A record batch is a container for records. In old versions of the record format (versions 0 and 1),
  * a batch consisted always of a single record if no compression was enabled, but could contain
  * many records otherwise. Newer versions (magic versions 2 and above) will generally contain many records

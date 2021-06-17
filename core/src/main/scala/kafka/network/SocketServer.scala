@@ -77,7 +77,14 @@ class SocketServer(val config: KafkaConfig,
                    val time: Time,
                    val credentialProvider: CredentialProvider)
   extends Logging with KafkaMetricsGroup with BrokerReconfigurable {
-
+  // 实现BrokerReconfigurable trait 说明 SocketServer的某些配置允许动态修改
+  /**
+   *
+   * 即Broker不停机时修改它们SocketServer的请求队列长度
+   * 由Broker端参数queued.max.requests值而定，默认值500
+   *
+   * 请求队列的最大长度.默认值是Broker端queued.max.requests参数值
+   */
   private val maxQueuedRequests = config.queuedMaxRequests
 
   private val logContext = new LogContext(s"[SocketServer brokerId=${config.brokerId}] ")
@@ -89,12 +96,18 @@ class SocketServer(val config: KafkaConfig,
   memoryPoolSensor.add(new Meter(TimeUnit.MILLISECONDS, memoryPoolDepletedPercentMetricName, memoryPoolDepletedTimeMetricName))
   private val memoryPool = if (config.queuedMaxBytes > 0) new SimpleMemoryPool(config.queuedMaxBytes, config.socketRequestMaxBytes, false, memoryPoolSensor) else MemoryPool.NONE
   // data-plane
+  // 处理数据类请求的 Processor 线程池
   private val dataPlaneProcessors = new ConcurrentHashMap[Int, Processor]()
+  // 处理数据类请求的Acceptor线程池，每套监听器对应一个Acceptor线程
   private[network] val dataPlaneAcceptors = new ConcurrentHashMap[EndPoint, Acceptor]()
+  // 处理数据类请求的Processor线程池
   val dataPlaneRequestChannel = new RequestChannel(maxQueuedRequests, DataPlaneMetricPrefix, time)
   // control-plane
+  // 用于处理控制类请求的Processor线程
+  // 定义了专属Processor线程而非线程池处理控制类请求
   private var controlPlaneProcessorOpt : Option[Processor] = None
   private[network] var controlPlaneAcceptorOpt : Option[Acceptor] = None
+  // 处理控制类请求专属的RequestChannel对象
   val controlPlaneRequestChannelOpt: Option[RequestChannel] = config.controlPlaneListenerName.map(_ =>
     new RequestChannel(20, ControlPlaneMetricPrefix, time))
 
@@ -178,7 +191,9 @@ class SocketServer(val config: KafkaConfig,
     info("Starting socket server acceptors and processors")
     this.synchronized {
       if (!startedProcessingRequests) {
+        // 启动处理控制类请求的Processor和Acceptor线程
         startControlPlaneProcessorAndAcceptor(authorizerFutures)
+        // 启动处理数据类请求的Processor和Acceptor线程
         startDataPlaneProcessorsAndAcceptors(authorizerFutures)
         startedProcessingRequests = true
       } else {
@@ -220,6 +235,7 @@ class SocketServer(val config: KafkaConfig,
    * other listeners to be stored in Kafka topics in this cluster.
    */
   private def startDataPlaneProcessorsAndAcceptors(authorizerFutures: Map[Endpoint, CompletableFuture[Void]]): Unit = {
+    // 获取Broker间通讯所用的监听器，默认PLAINTEXT
     val interBrokerListener = dataPlaneAcceptors.asScala.keySet
       .find(_.listenerName == config.interBrokerListenerName)
       .getOrElse(throw new IllegalStateException(s"Inter-broker listener ${config.interBrokerListenerName} not found, endpoints=${dataPlaneAcceptors.keySet}"))
@@ -227,6 +243,7 @@ class SocketServer(val config: KafkaConfig,
       dataPlaneAcceptors.asScala.filter { case (k, _) => k != interBrokerListener }.values
     orderedAcceptors.foreach { acceptor =>
       val endpoint = acceptor.endPoint
+      // 启动Processor和Acceptor线程
       startAcceptorAndProcessors(DataPlaneThreadPrefix, endpoint, acceptor, authorizerFutures)
     }
   }
@@ -245,26 +262,39 @@ class SocketServer(val config: KafkaConfig,
 
   private def createDataPlaneAcceptorsAndProcessors(dataProcessorsPerListener: Int,
                                                     endpoints: Seq[EndPoint]): Unit = {
+    // 遍历监听器集合
     endpoints.foreach { endpoint =>
+      // 将监听器放入连接配额管理
       connectionQuotas.addListener(config, endpoint.listenerName)
+      // 为监听器创建对应的Acceptor线程
       val dataPlaneAcceptor = createAcceptor(endpoint, DataPlaneMetricPrefix)
+      // 为监听器创建多个Processor线程
+      // 具体数目由num.network.threads决定
       addDataPlaneProcessors(dataPlaneAcceptor, endpoint, dataProcessorsPerListener)
+      // 将<监听器，Acceptor线程>对保存起来统一管理
       dataPlaneAcceptors.put(endpoint, dataPlaneAcceptor)
       info(s"Created data-plane acceptor and processors for endpoint : ${endpoint.listenerName}")
     }
   }
 
   private def createControlPlaneAcceptorAndProcessor(endpointOpt: Option[EndPoint]): Unit = {
+    // 如果为Control plane配置了监听器
     endpointOpt.foreach { endpoint =>
+      // 将监听器纳入到连接配额管理之下
       connectionQuotas.addListener(config, endpoint.listenerName)
+      // 为监听器创建对应的Acceptor线程
       val controlPlaneAcceptor = createAcceptor(endpoint, ControlPlaneMetricPrefix)
+      // 为监听器创建对应的Processor线程
       val controlPlaneProcessor = newProcessor(nextProcessorId, controlPlaneRequestChannelOpt.get, connectionQuotas, endpoint.listenerName, endpoint.securityProtocol, memoryPool)
       controlPlaneAcceptorOpt = Some(controlPlaneAcceptor)
       controlPlaneProcessorOpt = Some(controlPlaneProcessor)
       val listenerProcessors = new ArrayBuffer[Processor]()
       listenerProcessors += controlPlaneProcessor
+      // 将Processor线程添加到控制类请求专属RequestChannel中
+      // 即添加到RequestChannel实例保存的Processor线程池中
       controlPlaneRequestChannelOpt.foreach(_.addProcessor(controlPlaneProcessor))
       nextProcessorId += 1
+      // 把Processor对象也添加到Acceptor线程管理的Processor线程池中
       controlPlaneAcceptor.addProcessors(listenerProcessors, ControlPlaneThreadPrefix)
       info(s"Created control-plane acceptor and processor for endpoint : ${endpoint.listenerName}")
     }
@@ -436,6 +466,13 @@ object SocketServer {
   val DataPlaneMetricPrefix = ""
   val ControlPlaneMetricPrefix = "ControlPlane"
 
+  /**
+   * Broker端参数
+   * max.connections.per.ip
+   * max.connections.per.ip.overrides
+   * max.connections
+   * 可动态修改
+   */
   val ReconfigurableConfigs = Set(
     KafkaConfig.MaxConnectionsPerIpProp,
     KafkaConfig.MaxConnectionsPerIpOverridesProp,
@@ -516,6 +553,9 @@ private[kafka] abstract class AbstractServerThread(connectionQuotas: ConnectionQ
 }
 
 /**
+ * 保存了SocketServer为每个监听器定义的Acceptor线程
+ * 此线程负责分发该监听器上的入站连接建立请求
+ *
  * 接收并配置新连接的线程. There is one of these per endpoint.
  * 唯一作用:创建连接,并将接收到的Request传递给下游的Processor线程
  */
@@ -749,6 +789,8 @@ private[kafka] object Processor {
 }
 
 /**
+ * Processor线程池:网络线程池,负责将请求高速地放入到请求队列
+ *
  * 处理来自单个TCP连接的所有请求的线程.
  * There are N of these running in parallel
  * each of which has its own selector

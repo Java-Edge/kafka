@@ -313,6 +313,7 @@ object RequestChannel extends Logging {
   }
 }
 
+// 承载请求队列的请求处理通道
 class RequestChannel(val queueSize: Int, val metricNamePrefix : String, time: Time) extends KafkaMetricsGroup {
   import RequestChannel._
   val metrics = new RequestChannel.Metrics

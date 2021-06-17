@@ -24,6 +24,7 @@ import org.apache.kafka.common.security.auth.SecurityProtocol;
 
 /**
  * Represents a broker endpoint.
+ * Java版本的Endpoint类供clients端使用
  */
 
 @InterfaceStability.Evolving

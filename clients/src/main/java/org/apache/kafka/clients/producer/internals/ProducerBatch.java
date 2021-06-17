@@ -59,17 +59,22 @@ public final class ProducerBatch {
 
     private enum FinalState { ABORTED, FAILED, SUCCEEDED }
 
+    // RecordBatch创建时间
     final long createdMs;
     final TopicPartition topicPartition;
     final ProduceRequestResult produceFuture;
 
+    // 回调函数结构体Thunk列表thunks
     private final List<Thunk> thunks = new ArrayList<>();
     private final MemoryRecordsBuilder recordsBuilder;
+    // 尝试次数
     private final AtomicInteger attempts = new AtomicInteger(0);
     private final boolean isSplitBatch;
     private final AtomicReference<FinalState> finalState = new AtomicReference<>(null);
 
+    // 记录数目
     int recordCount;
+    // 最大记录大小
     int maxRecordSize;
     private long lastAttemptMs;
     private long lastAppendTime;
@@ -96,7 +101,7 @@ public final class ProducerBatch {
     }
 
     /**
-     * Append the record to the current record set and return the relative offset within that record set
+     * 添加记录到当前记录集，返回记录在记录集中的相对偏移量
      *
      * @return The RecordSend corresponding to this record or null if there isn't sufficient room.
      */
@@ -313,6 +318,8 @@ public final class ProducerBatch {
 
     /**
      * A callback and the associated FutureRecordMetadata argument to pass to it.
+     * 一个回调和关联的 FutureRecordMetadata 参数传递给它。
+     * 封装了Produce记录回调方法Callback和其相关参数FutureRecordMetadata
      */
     final private static class Thunk {
         final Callback callback;

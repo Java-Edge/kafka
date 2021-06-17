@@ -1703,14 +1703,20 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigO
   }
 
   private def getControlPlaneListenerNameAndSecurityProtocol: Option[(ListenerName, SecurityProtocol)] = {
+    // 获取Broker端参数值【control.plane.listener.name】
+    // 查看是否启用了control plane监听器
     Option(getString(KafkaConfig.ControlPlaneListenerNameProp)) match {
+      // 若启用
       case Some(name) =>
         val listenerName = ListenerName.normalised(name)
+        // 必须同时设置Broker端参数listener.security.protocol.map
+        // 并从该参数值中取出该监听器对应安全认证协议
         val securityProtocol = listenerSecurityProtocolMap.getOrElse(listenerName,
           throw new ConfigException(s"Listener with ${listenerName.value} defined in " +
             s"${KafkaConfig.ControlPlaneListenerNameProp} not found in ${KafkaConfig.ListenerSecurityProtocolMapProp}."))
+        // 返回<监听器名称，安全认证协议>
         Some(listenerName, securityProtocol)
-
+      // 如果未设置该参数值，直接返回None，说明未启用control plane监听器
       case None => None
    }
   }
