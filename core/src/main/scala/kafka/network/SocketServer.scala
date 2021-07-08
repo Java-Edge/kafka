@@ -553,11 +553,15 @@ private[kafka] abstract class AbstractServerThread(connectionQuotas: ConnectionQ
 }
 
 /**
- * 保存了SocketServer为每个监听器定义的Acceptor线程
+ * 保存了 SocketServer 为每个监听器定义的 Acceptor 线程
  * 此线程负责分发该监听器上的入站连接建立请求
  *
  * 接收并配置新连接的线程. There is one of these per endpoint.
- * 唯一作用:创建连接,并将接收到的Request传递给下游的Processor线程
+ * 唯一作用:创建连接,并将接收到的 Request 传递给下游的 Processor 线程
+ *
+ * Acceptor线程处理的这一步并非真正意义上的获取请求
+ * 仅仅是Acceptor线程为后续Processor线程获取请求铺路而已
+ * 也就是把需要用到的Socket通道创建出来，传给下面的Processor线程使用。
  */
 private[kafka] class Acceptor(val endPoint: EndPoint,
                               val sendBufferSize: Int,
@@ -575,7 +579,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
    * Broker创建对应的 ServerSocketChannel 实例
    * 后续把该 Channel 注册到刚才的 Selector
    */
-  val serverChannel = openServerSocket(endPoint.host, endPoint.port)
+  val serverChannel: ServerSocketChannel = openServerSocket(endPoint.host, endPoint.port)
 
   /**
    * 创建Processor线程池,实际上是Processor线程数组
@@ -647,7 +651,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
    * 接收循环，检查是否有新尝试的连接
    */
   def run(): Unit = {
-    // 注册OP_ACCEPT事件
+    // 注册 OP_ACCEPT 事件
     serverChannel.register(nioSelector, SelectionKey.OP_ACCEPT)
     // 等待Acceptor线程启动完成
     startupComplete()
@@ -658,17 +662,23 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
         try {
           // 每500ms获取一次就绪I/O事件
           val ready = nioSelector.select(500)
-          if (ready > 0) { // 如果有I/O事件准备就绪
+          // 若存在准备就绪的I/O事件
+          if (ready > 0) {
+            // 获取对应的 SelectionKey 集
             val keys = nioSelector.selectedKeys()
             val iter = keys.iterator()
+            // 遍历这些 SelectionKey
             while (iter.hasNext && isRunning) {
               try {
                 val key = iter.next
                 iter.remove()
-
+                // 测试 SelectionKey 的底层通道是否能够接受新Socket连接
                 if (key.isAcceptable) {
                   // 调用accept方法创建Socket连接
+                  // 接受此连接并分配对应的Processor线程
                   accept(key).foreach { socketChannel =>
+                    // 将 channel 分配给下一个processor（使用轮询），channel可以在不阻塞的情况下添加到该处理器。
+                    // 若 newConnections 队列在所有处理器上已满，则阻塞直到最后一个能够接受连接。
                     // Assign the channel to the next processor (using round-robin) to which the
                     // channel can be added without blocking. If newConnections queue is full on
                     // all processors, block until the last one is able to accept a connection.
@@ -683,7 +693,8 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
                         currentProcessorIndex = currentProcessorIndex % processors.length
                         processors(currentProcessorIndex)
                       }
-                      // 更新Processor线程序号
+                      // 将新Socket连接加入到Processor线程待处理连接队列
+                      // 更新Processor线程序号,等待Processor线程后续处理
                       currentProcessorIndex += 1
                     } while (!assignNewConnection(socketChannel, processor, retriesLeft == 0))
                   }
@@ -741,6 +752,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
    */
   private def accept(key: SelectionKey): Option[SocketChannel] = {
     val serverSocketChannel = key.channel().asInstanceOf[ServerSocketChannel]
+    // 创建对应的SocketChannel
     val socketChannel = serverSocketChannel.accept()
     try {
       connectionQuotas.inc(endPoint.listenerName, socketChannel.socket.getInetAddress, blockedPercentMeter)
@@ -759,6 +771,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
   }
 
   /**
+   * 将这个新建的 SocketChannel 对象存入 Processors 线程的 newConnections 队列
    * 令Processor线程创建与发送方的连接
    */
   private def assignNewConnection(socketChannel: SocketChannel, processor: Processor, mayBlock: Boolean): Boolean = {
@@ -828,6 +841,8 @@ private[kafka] class Processor(val id: Int,
   }
 
   // 维护要创建的新连接信息 SocketChannel 对象。默认容量20，无法变更长度
+  // Processor线程将该Socket连接请求，放入到它维护的待处理连接队列中
+  // 后续Processor线程的run方法会不断地从该队列中取出这些Socket连接请求，然后创建对应的Socket连接
   private val newConnections = new ArrayBlockingQueue[SocketChannel](connectionQueueSize)
   // 当Processor线程将Response返给Request发送方后，将Response放入该队列
   private val inflightResponses = mutable.Map[String, RequestChannel.Response]()
@@ -942,8 +957,12 @@ private[kafka] class Processor(val id: Int,
     processException(errorMessage, throwable)
   }
 
+  /**
+   * Processor线程取出Response队列中的Response，返还给Request发送方
+   */
   private def processNewResponses(): Unit = {
     var currentResponse: RequestChannel.Response = null
+    // 循环获取Response队列中的Response
     while ({currentResponse = dequeueResponse(); currentResponse != null}) {
       // Response队列中存在待处理Response
       // 获取连接通道ID
@@ -960,7 +979,7 @@ private[kafka] class Processor(val id: Int,
             // throttling delay has already passed by now.
             handleChannelMuteEvent(channelId, ChannelMuteEvent.RESPONSE_SENT)
             tryUnmuteChannel(channelId)
-          // 发送Response并将Response放入inflightResponses
+          // 需要发送Response,并将Response放入inflightResponses
           case response: SendResponse =>
             sendResponse(response, response.responseSend)
           // 关闭对应的连接
@@ -998,7 +1017,7 @@ private[kafka] class Processor(val id: Int,
     // `openOrClosingChannel` can be None if the selector closed the connection because it was idle for too long
     if (openOrClosingChannel(connectionId).isDefined) {
       // 如果该连接处于可连接状态
-      // 发送Response
+      // 真正的发送逻辑
       selector.send(responseSend)
       // 将Response加入到inflightResponses队列
       inflightResponses += (connectionId -> response)
@@ -1019,15 +1038,17 @@ private[kafka] class Processor(val id: Int,
   }
 
   /**
+   * 一旦Processor线程成功地向SocketChannel注册了Selector
+   * Client或Broker发送的请求就能通过该SocketChannel被获取到
    * Processor从底层Socket通道不断读取已接收到的网络请求
-   * 然后转换成Request实例
-   * 并放入Request队列
+   * 然后转换成Request实例,并放入Request队列
    */
   private def processCompletedReceives(): Unit = {
-    // 遍历所有已接收Request
+    // 从Selector中提取已接收到的所有请求数据
     selector.completedReceives.forEach { receive =>
       try {
         // 保证对应连接通道已建立
+        // 打开与发送方对应的Socket Channel，若不存在可用的Channel，抛异常
         openOrClosingChannel(receive.source) match {
           case Some(channel) =>
             val header = RequestHeader.parse(receive.payload)
@@ -1047,6 +1068,7 @@ private[kafka] class Processor(val id: Int,
                 val context = new RequestContext(header, connectionId, channel.socketAddress,
                   channel.principal, listenerName, securityProtocol,
                   channel.channelMetadataRegistry.clientInformation)
+                // 根据Channel中获取的Receive对象，构建Request对象
                 val req = new RequestChannel.Request(processor = id, context = context,
                   startTimeNanos = nowNanos, memoryPool, receive.payload, requestChannel.metrics)
                 // KIP-511: ApiVersionsRequest is intercepted here to catch the client software name
@@ -1082,6 +1104,9 @@ private[kafka] class Processor(val id: Int,
   /**
    * 它负责处理Response的回调逻辑
    * Response需要被发送后才能执行对应的回调逻辑
+   *
+   * 只有很少的Response携带了回调逻辑:
+   * 比如 FETCH 请求在发送Response之后，就要求更新下Broker端与消息格式转换操作相关的统计指标
    */
   private def processCompletedSends(): Unit = {
     // 遍历底层SocketChannel已发送的Response
@@ -1177,6 +1202,8 @@ private[kafka] class Processor(val id: Int,
              mayBlock: Boolean,
              acceptorIdlePercentMeter: com.yammer.metrics.core.Meter): Boolean = {
     val accepted = {
+      // 等待Processor线程将该Socket连接请求,放入到它维护的待处理连接队列中
+      // 后续Processor线程的run方法会不断地从该队列中取出这些Socket连接请求,然后创建对应的Socket连接。
       if (newConnections.offer(socketChannel))
         true
       else if (mayBlock) {
@@ -1201,12 +1228,12 @@ private[kafka] class Processor(val id: Int,
     var connectionsProcessed = 0
     while (connectionsProcessed < connectionQueueSize && !newConnections.isEmpty) {
       // 如果没超配额并且有待处理新连接
-      // 从连接队列中取出SocketChannel
+      // Processor线程会不断轮询这个队列中的待处理 SocketChannel
       val channel = newConnections.poll()
       try {
         debug(s"Processor $id listening to new connection from ${channel.socket.getRemoteSocketAddress}")
-        // 用给定Selector注册该Channel
         // 调用Java NIO的SocketChannel.register(selector, SelectionKey.OP_READ)
+        // 向这些Channel注册基于Java NIO的Selector,用于真正的请求获取和响应发送I/O操作
         selector.register(connectionId(channel.socket), channel)
         // 更新计数器
         connectionsProcessed += 1

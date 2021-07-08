@@ -394,6 +394,7 @@ class RequestChannel(val queueSize: Int, val metricNamePrefix : String, time: Ti
      * 将response对象放置到对应Processor线程的Response队列中
      */
     if (processor != null) {
+      // 将Response添加到该Processor线程的Response队列上
       processor.enqueueResponse(response)
     }
   }
@@ -427,6 +428,7 @@ class RequestChannel(val queueSize: Int, val metricNamePrefix : String, time: Ti
     metrics.close()
   }
 
+  // 将ShutdownRequest写入到请求队列
   def sendShutdownRequest(): Unit = requestQueue.put(ShutdownRequest)
 
 }

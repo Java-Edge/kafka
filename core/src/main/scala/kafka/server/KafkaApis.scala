@@ -90,7 +90,7 @@ import kafka.coordinator.group.GroupOverview
 
 
 /**
- * Logic to handle the various Kafka requests
+ * 处理各种Kafka请求的逻辑
  */
 class KafkaApis(val requestChannel: RequestChannel,
                 val replicaManager: ReplicaManager,
