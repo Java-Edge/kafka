@@ -30,6 +30,11 @@ import org.apache.zookeeper.KeeperException
 import org.apache.zookeeper.KeeperException.Code
 import scala.collection.{Map, Seq, mutable}
 
+/**
+ * 分区状态机
+ * 负责定义Kafka分区状态、合法的状态转换，以及管理状态之间的转换。
+ * @param controllerContext
+ */
 abstract class PartitionStateMachine(controllerContext: ControllerContext) extends Logging {
   /**
    * Invoked on successful controller election.

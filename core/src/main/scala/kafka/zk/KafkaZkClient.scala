@@ -799,6 +799,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
 
   /**
    * Remove the given topics from the topics marked for deletion.
+   * 批量删除一组主题在/admin/delete_topics下的子节点
    * @param topics the topics to remove.
    * @param expectedControllerEpochZkVersion expected controller epoch zkVersion.
    */

@@ -291,6 +291,8 @@ class ControllerContext {
     // directly.
     if (!topicsToBeDeleted.contains(topic))
       cleanPreferredReplicaImbalanceMetric(topic)
+    // 第4步：更新元数据缓存中的待删除主题列表和已开始删除的主题列表
+    // 因为主题已经成功删除了，没有必要出现在这两个列表中了
     topicsToBeDeleted -= topic
     topicsWithDeletionStarted -= topic
     allTopics -= topic
