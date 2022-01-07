@@ -121,7 +121,9 @@ public class FetchResponse<T extends BaseRecords> extends AbstractResponse {
         private final FetchResponseData.FetchablePartitionResponse partitionResponse;
 
         // Derived fields
+        // 期望的Read Replica,KAFKA 2.4之后支持部分Follower副本可以对外提供读服务
         private final Optional<Integer> preferredReplica;
+        // 保存该分区当前已终止事务列表
         private final List<AbortedTransaction> abortedTransactions;
         private final Errors error;
 
