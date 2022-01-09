@@ -62,7 +62,8 @@ import scala.jdk.CollectionConverters._
 import scala.collection.{Map, Seq, Set, mutable}
 import scala.compat.java8.OptionConverters._
 
-/*
+/**
+ * 副本管理器执行副本日志【写入】操作后返回的结果信息
  * Result metadata of a log append operation on the log
  */
 case class LogAppendResult(info: LogAppendInfo, exception: Option[Throwable] = None) {
@@ -72,6 +73,13 @@ case class LogAppendResult(info: LogAppendInfo, exception: Option[Throwable] = N
   }
 }
 
+/**
+ * 副本管理器执行副本日志【删除】操作后返回的结果信息
+ *
+ * @param requestedOffset
+ * @param lowWatermark
+ * @param exception
+ */
 case class LogDeleteRecordsResult(requestedOffset: Long, lowWatermark: Long, exception: Option[Throwable] = None) {
   def error: Errors = exception match {
     case None => Errors.NONE
@@ -80,6 +88,7 @@ case class LogDeleteRecordsResult(requestedOffset: Long, lowWatermark: Long, exc
 }
 
 /**
+ * 表示副本管理器从副本本地日志中【读取】到的消息数据以及相关元数据信息，如高水位值、Log Start Offset值。
  * Result metadata of a log read operation on the log
  * @param info @FetchDataInfo returned by the @Log read
  * @param highWatermark high watermark of the local replica
@@ -125,6 +134,18 @@ case class LogReadResult(info: FetchDataInfo,
 
 }
 
+/**
+ * 定义获取到的分区数据以及重要元数据信息
+ *
+ * @param error
+ * @param highWatermark 高水位值
+ * @param logStartOffset
+ * @param records
+ * @param lastStableOffset
+ * @param abortedTransactions
+ * @param preferredReadReplica
+ * @param isReassignmentFetch
+ */
 case class FetchPartitionData(error: Errors = Errors.NONE,
                               highWatermark: Long,
                               logStartOffset: Long,
@@ -136,6 +157,10 @@ case class FetchPartitionData(error: Errors = Errors.NONE,
 
 
 /**
+ * 表示Broker本地保存的分区对象的状态。可能的状态：
+ *  不存在状态（None）
+ *  在线状态（Online）
+ *  离线状态（Offline）
  * Trait to represent the state of hosted partitions. We create a concrete (active) Partition
  * instance when the broker receives a LeaderAndIsr request from the controller indicating
  * that it should be either a leader or follower of a partition.
@@ -158,12 +183,44 @@ object HostedPartition {
   final object Offline extends HostedPartition
 }
 
+/**
+ * ReplicaManager类的伴生对象
+ */
 object ReplicaManager {
   val HighWatermarkFilename = "replication-offset-checkpoint"
   val IsrChangePropagationBlackOut = 5000L
   val IsrChangePropagationInterval = 60000L
 }
 
+/**
+ * 副本管理器具体实现代码，定义读写副本、删除副本消息及其它管理方法
+ *
+ * @param config 配置管理类
+ * @param metrics 监控指标类
+ * @param time 定时器类
+ * @param zkClient ZooKeeper客户端
+ * @param scheduler Kafka调度器
+ * @param logManager 日志管理器，负责创建和管理分区的日志对象，定义了很多操作日志对象的方法，协助副本管理器操作集群副本对象
+ * @param isShuttingDown 是否已经关闭
+ * @param quotaManagers 配额管理器
+ * @param brokerTopicStats Broker主题监控指标类
+ * @param metadataCache Broker端的元数据缓存，保存集群上分区的Leader、ISR等信息，和Controller端元数据缓存有联系
+ *                      每台Broker上的元数据缓存，是从Controller端的元数据缓存异步同步过来
+ * @param logDirFailureChannel 处理延时PRODUCE请求的Purgatory，失效日志路径的处理器类。Kafka 1.1新增 JBOD 支持：
+ *        Broker若配置了多个日志路径，当某日志路径不可用（如该路径所在磁盘已满），Broker能继续工作。
+ *        那就需要一整套机制保证，在出现磁盘I/O故障时，Broker的正常磁盘下的副本能够正常提供服务。
+ *        其中，logDirFailureChannel是暂存失效日志路径的管理器类。该功能算是Kafka提升服务器端高可用性的一个改进。
+ *        有了它之后，即使Broker上的单块磁盘坏掉了，整个Broker的服务也不会中断。
+ *
+ * 如下四个Purgatory相关的字段分别管理4类延时请求：
+ *  前两类处理延时生产者请求和延时消费者请求
+ *  后两类处理延时消息删除请求和延时Leader选举请求
+ * @param delayedProducePurgatory 处理延时PRODUCE请求的Purgatory
+ * @param delayedFetchPurgatory 处理延时FETCH请求的Purgatory
+ * @param delayedDeleteRecordsPurgatory 处理延时DELETE_RECORDS请求的Purgatory
+ * @param delayedElectLeaderPurgatory 处理延时ELECT_LEADERS请求的Purgatory
+ * @param threadNamePrefix
+ */
 class ReplicaManager(val config: KafkaConfig,
                      metrics: Metrics,
                      time: Time,
@@ -209,7 +266,10 @@ class ReplicaManager(val config: KafkaConfig,
       threadNamePrefix)
   }
 
-  /* epoch of the controller that last changed the leader */
+  /**
+   *  epoch of the controller that last changed the leader
+   *  最新一次变更分区Leader的Controller的Epoch值，默认为0。Controller每发生一次变更，该字段值+1
+   */
   @volatile var controllerEpoch: Int = KafkaController.InitialControllerEpoch
   private val localBrokerId = config.brokerId
   private val allPartitions = new Pool[TopicPartition, HostedPartition](
@@ -364,6 +424,7 @@ class ReplicaManager(val config: KafkaConfig,
           s"Latest known controller epoch is ${this.controllerEpoch}")
         (responseMap, Errors.STALE_CONTROLLER_EPOCH)
       } else {
+        // 处理StopReplicaRequest请求时
         this.controllerEpoch = controllerEpoch
 
         val stoppedPartitions = mutable.Map.empty[TopicPartition, StopReplicaPartitionState]
@@ -1227,6 +1288,7 @@ class ReplicaManager(val config: KafkaConfig,
         throw new ControllerMovedException(stateChangeLogger.messageWithPrefix(stateControllerEpochErrorMessage))
       } else {
         val deletedPartitions = metadataCache.updateMetadata(correlationId, updateMetadataRequest)
+        // 处理UpdateMetadataRequest请求时
         controllerEpoch = updateMetadataRequest.controllerEpoch
         deletedPartitions
       }
@@ -1257,6 +1319,7 @@ class ReplicaManager(val config: KafkaConfig,
           leaderAndIsrRequest.getErrorResponse(0, Errors.STALE_CONTROLLER_EPOCH.exception)
         } else {
           val responseMap = new mutable.HashMap[TopicPartition, Errors]
+          // 处理LeaderAndIsrRequest请求时
           controllerEpoch = leaderAndIsrRequest.controllerEpoch
 
           val partitionStates = new mutable.HashMap[Partition, LeaderAndIsrPartitionState]()
