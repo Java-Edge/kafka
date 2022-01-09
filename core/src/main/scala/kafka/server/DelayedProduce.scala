@@ -46,6 +46,8 @@ case class ProduceMetadata(produceRequiredAcks: Short,
 }
 
 /**
+ * 生产者端的延时发送请求
+ * 对应的Purgatory就是ReplicaManager类构造函数中的delayedProducePurgatory
  * A delayed produce operation that can be created by the replica manager and watched
  * in the produce operation purgatory
  */
