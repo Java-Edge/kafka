@@ -1037,18 +1037,36 @@ class ReplicaManager(val config: KafkaConfig,
    * 当超时或满足所需获取信息时，将触发回调函数
    * 消费者们可从任何副本中获取，但follower副本们只能从leader副本获取
    */
-  def fetchMessages(timeout: Long,
-                    replicaId: Int,
+  def fetchMessages(timeout: Long, // 请求处理超时时间：
+                    // 对于消费者，即request.timeout.ms参数值
+                    // 对于Follower副本，即Broker端replica.fetch.wait.max.ms参数值
+                    replicaId: Int, // 副本ID：
+                    // 对于消费者，即-1
+                    // 对于Follower副本，即Follower副本所在的Broker ID
+
+                    // 能够获取的最小、最大字节数:
+                    // 对于消费者，它们分别对应Consumer端参数fetch.min.bytes fetch.max.bytes
+                    // 对于Follower副本，对应Broker端参数replica.fetch.min.bytes replica.fetch.max.bytes
                     fetchMinBytes: Int,
                     fetchMaxBytes: Int,
-                    hardMaxBytesLimit: Boolean,
+                    hardMaxBytesLimit: Boolean, // 对能否超过最大字节数做硬限制
+                    // hardMaxBytesLimit=True：读取请求返回的数据字节数绝不允许超过最大字节数。
+
+                    // 规定了读取分区的信息，如要读取哪些分区、从这些分区的哪个位移值开始读、最多可以读多少字节
                     fetchInfos: Seq[(TopicPartition, PartitionData)],
-                    quota: ReplicaQuota,
+                    quota: ReplicaQuota, // 配额控制类，主要判断是否需在读取的过程做限速
+
+                    // Response回调逻辑函数。当请求被处理完成后，调用该方法收尾
                     responseCallback: Seq[(TopicPartition, FetchPartitionData)] => Unit,
                     isolationLevel: IsolationLevel,
                     clientMetadata: Option[ClientMetadata]): Unit = {
+    // 判断该读取请求是否来自Follower副本或Consumer
     val isFromFollower = Request.isValidBrokerId(replicaId)
     val isFromConsumer = !(isFromFollower || replicaId == Request.FutureLocalReplicaId)
+    // 根据请求发送方判断可读取范围
+    // 如果请求来自于普通消费者，那么可以读到高水位值
+    // 如果请求来自于配置了READ_COMMITTED的消费者，那么可以读到Log Stable Offset值
+    // 如果请求来自于Follower副本，那么可以读到LEO值
     val fetchIsolation = if (!isFromConsumer)
       FetchLogEnd
     else if (isolationLevel == IsolationLevel.READ_COMMITTED)
@@ -1058,6 +1076,7 @@ class ReplicaManager(val config: KafkaConfig,
 
     // Restrict fetching to leader if request is from follower or from a client with older version (no ClientMetadata)
     val fetchOnlyFromLeader = isFromFollower || (isFromConsumer && clientMetadata.isEmpty)
+    // 定义readFromLog方法读取底层日志中的消息
     def readFromLog(): Seq[(TopicPartition, LogReadResult)] = {
       val result = readFromLocalLog(
         replicaId = replicaId,
@@ -1072,12 +1091,14 @@ class ReplicaManager(val config: KafkaConfig,
       else result
     }
 
+    // 读取消息并返回日志读取结果
     val logReadResults = readFromLog()
 
     // check if this fetch request can be satisfied right away
     var bytesReadable: Long = 0
     var errorReadingData = false
     val logReadResultMap = new mutable.HashMap[TopicPartition, LogReadResult]
+    // 统计总共可读取的字节数
     logReadResults.foreach { case (topicPartition, logReadResult) =>
       brokerTopicStats.topicStats(topicPartition.topic).totalFetchRequestRate.mark()
       brokerTopicStats.allTopicsStats.totalFetchRequestRate.mark()
@@ -1088,17 +1109,20 @@ class ReplicaManager(val config: KafkaConfig,
       logReadResultMap.put(topicPartition, logReadResult)
     }
 
-    // respond immediately if 1) fetch request does not want to wait
-    //                        2) fetch request does not require any data
-    //                        3) has enough data to respond
-    //                        4) some error happens while reading data
+    // 判断是否能立即返回Response，需满足如下条件任一：
+    // 1. 请求没有设置超时时间，说明请求方想让请求被处理后立即返回
+    // 2. 未获取到任何数据
+    // 3. 已累积到足够多的数据
+    // 4. 读取过程中出错
     if (timeout <= 0 || fetchInfos.isEmpty || bytesReadable >= fetchMinBytes || errorReadingData) {
+      // 构建返回结果
       val fetchPartitionData = logReadResults.map { case (tp, result) =>
         tp -> FetchPartitionData(result.error, result.highWatermark, result.leaderLogStartOffset, result.info.records,
           result.lastStableOffset, result.info.abortedTransactions, result.preferredReadReplica, isFromFollower && isAddingReplica(tp, replicaId))
       }
+      // 调用回调函数
       responseCallback(fetchPartitionData)
-    } else {
+    } else { // 若无法立即完成请求，就需要进行延时处理
       // construct the fetch results from the read results
       val fetchPartitionStatus = new mutable.ArrayBuffer[(TopicPartition, FetchPartitionStatus)]
       fetchInfos.foreach { case (topicPartition, partitionData) =>
@@ -1109,6 +1133,7 @@ class ReplicaManager(val config: KafkaConfig,
       }
       val fetchMetadata: SFetchMetadata = SFetchMetadata(fetchMinBytes, fetchMaxBytes, hardMaxBytesLimit,
         fetchOnlyFromLeader, fetchIsolation, isFromFollower, replicaId, fetchPartitionStatus)
+      // 构建DelayedFetch延时请求对象
       val delayedFetch = new DelayedFetch(timeout, fetchMetadata, this, quota, clientMetadata,
         responseCallback)
 
@@ -1118,6 +1143,7 @@ class ReplicaManager(val config: KafkaConfig,
       // try to complete the request immediately, otherwise put it into the purgatory;
       // this is because while the delayed fetch operation is being created, new requests
       // may arrive and hence make this operation completable.
+      // 再一次尝试完成请求，如果依然不能完成，则交由Purgatory等待后续处理
       delayedFetchPurgatory.tryCompleteElseWatch(delayedFetch, delayedFetchKeys)
     }
   }
