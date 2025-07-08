@@ -19,11 +19,9 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.message.HeartbeatResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
 import java.util.Map;
-
 
 public class HeartbeatResponse extends AbstractResponse {
 
@@ -40,16 +38,18 @@ public class HeartbeatResponse extends AbstractResponse {
     private final HeartbeatResponseData data;
 
     public HeartbeatResponse(HeartbeatResponseData data) {
+        super(ApiKeys.HEARTBEAT);
         this.data = data;
-    }
-
-    public HeartbeatResponse(Struct struct, short version) {
-        this.data = new HeartbeatResponseData(struct, version);
     }
 
     @Override
     public int throttleTimeMs() {
         return data.throttleTimeMs();
+    }
+
+    @Override
+    public void maybeSetThrottleTimeMs(int throttleTimeMs) {
+        data.setThrottleTimeMs(throttleTimeMs);
     }
 
     public Errors error() {
@@ -62,12 +62,12 @@ public class HeartbeatResponse extends AbstractResponse {
     }
 
     @Override
-    protected Struct toStruct(short version) {
-        return data.toStruct(version);
+    public HeartbeatResponseData data() {
+        return data;
     }
 
-    public static HeartbeatResponse parse(ByteBuffer buffer, short version) {
-        return new HeartbeatResponse(ApiKeys.HEARTBEAT.parseResponse(version, buffer), version);
+    public static HeartbeatResponse parse(Readable readable, short version) {
+        return new HeartbeatResponse(new HeartbeatResponseData(readable, version));
     }
 
     @Override

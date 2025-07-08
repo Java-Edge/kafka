@@ -20,10 +20,9 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.message.DeleteRecordsResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
-import java.util.HashMap;
+import java.util.EnumMap;
 import java.util.Map;
 
 public class DeleteRecordsResponse extends AbstractResponse {
@@ -42,18 +41,11 @@ public class DeleteRecordsResponse extends AbstractResponse {
      */
 
     public DeleteRecordsResponse(DeleteRecordsResponseData data) {
+        super(ApiKeys.DELETE_RECORDS);
         this.data = data;
     }
 
-    public DeleteRecordsResponse(Struct struct, short version) {
-        this.data = new DeleteRecordsResponseData(struct, version);
-    }
-
     @Override
-    protected Struct toStruct(short version) {
-        return data.toStruct(version);
-    }
-
     public DeleteRecordsResponseData data() {
         return data;
     }
@@ -64,8 +56,13 @@ public class DeleteRecordsResponse extends AbstractResponse {
     }
 
     @Override
+    public void maybeSetThrottleTimeMs(int throttleTimeMs) {
+        data.setThrottleTimeMs(throttleTimeMs);
+    }
+
+    @Override
     public Map<Errors, Integer> errorCounts() {
-        Map<Errors, Integer> errorCounts = new HashMap<>();
+        Map<Errors, Integer> errorCounts = new EnumMap<>(Errors.class);
         data.topics().forEach(topicResponses ->
             topicResponses.partitions().forEach(response ->
                 updateErrorCounts(errorCounts, Errors.forCode(response.errorCode()))
@@ -74,8 +71,8 @@ public class DeleteRecordsResponse extends AbstractResponse {
         return errorCounts;
     }
 
-    public static DeleteRecordsResponse parse(ByteBuffer buffer, short version) {
-        return new DeleteRecordsResponse(ApiKeys.DELETE_RECORDS.parseResponse(version, buffer), version);
+    public static DeleteRecordsResponse parse(Readable readable, short version) {
+        return new DeleteRecordsResponse(new DeleteRecordsResponseData(readable, version));
     }
 
     @Override

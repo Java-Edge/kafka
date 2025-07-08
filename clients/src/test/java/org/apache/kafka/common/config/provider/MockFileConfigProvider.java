@@ -19,12 +19,13 @@ package org.apache.kafka.common.config.provider;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.StringReader;
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class MockFileConfigProvider extends FileConfigProvider {
 
@@ -33,6 +34,8 @@ public class MockFileConfigProvider extends FileConfigProvider {
     private boolean closed = false;
 
     public void configure(Map<String, ?> configs) {
+        super.configure(configs);
+
         Object id = configs.get("testId");
         if (id == null) {
             throw new RuntimeException(getClass().getName() + " missing 'testId' config");
@@ -45,7 +48,7 @@ public class MockFileConfigProvider extends FileConfigProvider {
     }
 
     @Override
-    protected Reader reader(String path) throws IOException {
+    protected Reader reader(Path path) throws IOException {
         return new StringReader("key=testKey\npassword=randomPassword");
     }
 

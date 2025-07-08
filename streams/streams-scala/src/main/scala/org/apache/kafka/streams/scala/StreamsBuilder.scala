@@ -1,7 +1,4 @@
 /*
- * Copyright (C) 2018 Lightbend Inc. <https://www.lightbend.com>
- * Copyright (C) 2017-2018 Alexis Seigneurin.
- *
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements. See the NOTICE file distributed with
  * this work for additional information regarding copyright ownership.
@@ -23,7 +20,7 @@ import java.util.Properties
 import java.util.regex.Pattern
 
 import org.apache.kafka.streams.kstream.GlobalKTable
-import org.apache.kafka.streams.processor.{ProcessorSupplier, StateStore}
+import org.apache.kafka.streams.processor.StateStore
 import org.apache.kafka.streams.state.StoreBuilder
 import org.apache.kafka.streams.{StreamsBuilder => StreamsBuilderJ, Topology}
 import org.apache.kafka.streams.scala.kstream.{Consumed, KStream, KTable, Materialized}
@@ -123,8 +120,8 @@ class StreamsBuilder(inner: StreamsBuilderJ = new StreamsBuilderJ) {
    * @see #table(String)
    * @see `org.apache.kafka.streams.StreamsBuilder#table`
    */
-  def table[K, V](topic: String, materialized: Materialized[K, V, ByteArrayKeyValueStore])(
-    implicit consumed: Consumed[K, V]
+  def table[K, V](topic: String, materialized: Materialized[K, V, ByteArrayKeyValueStore])(implicit
+    consumed: Consumed[K, V]
   ): KTable[K, V] =
     new KTable(inner.table[K, V](topic, consumed, materialized))
 
@@ -149,8 +146,8 @@ class StreamsBuilder(inner: StreamsBuilderJ = new StreamsBuilderJ) {
    * @return a `GlobalKTable` for the specified topic
    * @see `org.apache.kafka.streams.StreamsBuilder#globalTable`
    */
-  def globalTable[K, V](topic: String, materialized: Materialized[K, V, ByteArrayKeyValueStore])(
-    implicit consumed: Consumed[K, V]
+  def globalTable[K, V](topic: String, materialized: Materialized[K, V, ByteArrayKeyValueStore])(implicit
+    consumed: Consumed[K, V]
   ): GlobalKTable[K, V] =
     inner.globalTable(topic, consumed, materialized)
 
@@ -176,10 +173,12 @@ class StreamsBuilder(inner: StreamsBuilderJ = new StreamsBuilderJ) {
    *
    * @see `org.apache.kafka.streams.StreamsBuilder#addGlobalStore`
    */
-  def addGlobalStore[K, V](storeBuilder: StoreBuilder[_ <: StateStore],
-                           topic: String,
-                           consumed: Consumed[K, V],
-                           stateUpdateSupplier: ProcessorSupplier[K, V]): StreamsBuilderJ =
+  def addGlobalStore[K, V](
+    storeBuilder: StoreBuilder[_ <: StateStore],
+    topic: String,
+    consumed: Consumed[K, V],
+    stateUpdateSupplier: org.apache.kafka.streams.processor.api.ProcessorSupplier[K, V, Void, Void]
+  ): StreamsBuilderJ =
     inner.addGlobalStore(storeBuilder, topic, consumed, stateUpdateSupplier)
 
   def build(): Topology = inner.build()

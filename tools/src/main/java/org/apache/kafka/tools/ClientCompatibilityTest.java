@@ -16,10 +16,6 @@
  */
 package org.apache.kafka.tools;
 
-import net.sourceforge.argparse4j.ArgumentParsers;
-import net.sourceforge.argparse4j.inf.ArgumentParser;
-import net.sourceforge.argparse4j.inf.ArgumentParserException;
-import net.sourceforge.argparse4j.inf.Namespace;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.Config;
@@ -50,6 +46,12 @@ import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.common.utils.Time;
+
+import net.sourceforge.argparse4j.ArgumentParsers;
+import net.sourceforge.argparse4j.inf.ArgumentParser;
+import net.sourceforge.argparse4j.inf.ArgumentParserException;
+import net.sourceforge.argparse4j.inf.Namespace;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -88,6 +90,7 @@ public class ClientCompatibilityTest {
         final boolean createTopicsSupported;
         final boolean describeAclsSupported;
         final boolean describeConfigsSupported;
+        final boolean idempotentProducerSupported;
 
         TestConfig(Namespace res) {
             this.bootstrapServer = res.getString("bootstrapServer");
@@ -99,6 +102,7 @@ public class ClientCompatibilityTest {
             this.createTopicsSupported = res.getBoolean("createTopicsSupported");
             this.describeAclsSupported = res.getBoolean("describeAclsSupported");
             this.describeConfigsSupported = res.getBoolean("describeConfigsSupported");
+            this.idempotentProducerSupported = res.get("idempotentProducerSupported");
         }
     }
 
@@ -172,6 +176,13 @@ public class ClientCompatibilityTest {
             .dest("describeConfigsSupported")
             .metavar("DESCRIBE_CONFIGS_SUPPORTED")
             .help("Whether describeConfigs is supported in the AdminClient.");
+        parser.addArgument("--idempotent-producer-supported")
+            .action(store())
+            .required(true)
+            .type(Boolean.class)
+            .dest("idempotentProducerSupported")
+            .metavar("IDEMPOTENT_PRODUCER_SUPPORTED")
+            .help("Whether the producer supports idempotency.");
 
         Namespace res = null;
         try {
@@ -243,6 +254,9 @@ public class ClientCompatibilityTest {
     public void testProduce() throws Exception {
         Properties producerProps = new Properties();
         producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, testConfig.bootstrapServer);
+        if (!testConfig.idempotentProducerSupported) {
+            producerProps.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "false");
+        }
         ByteArraySerializer serializer = new ByteArraySerializer();
         KafkaProducer<byte[], byte[]> producer = new KafkaProducer<>(producerProps, serializer, serializer);
         ProducerRecord<byte[], byte[]> record1 = new ProducerRecord<>(testConfig.topic, message1);
@@ -338,7 +352,7 @@ public class ClientCompatibilityTest {
             throws InterruptedException, ExecutionException {
         while (true) {
             try {
-                client.describeTopics(topics).all().get();
+                client.describeTopics(topics).allTopicNames().get();
                 break;
             } catch (ExecutionException e) {
                 if (e.getCause() instanceof UnknownTopicOrPartitionException)
@@ -403,7 +417,7 @@ public class ClientCompatibilityTest {
             new ClientCompatibilityTestDeserializer(testConfig.expectClusterId);
         try (final KafkaConsumer<byte[], byte[]> consumer = new KafkaConsumer<>(consumerProps, deserializer, deserializer)) {
             final List<PartitionInfo> partitionInfos = consumer.partitionsFor(testConfig.topic);
-            if (partitionInfos.size() < 1)
+            if (partitionInfos.isEmpty())
                 throw new RuntimeException("Expected at least one partition for topic " + testConfig.topic);
             final Map<TopicPartition, Long> timestampsToSearch = new HashMap<>();
             final LinkedList<TopicPartition> topicPartitions = new LinkedList<>();

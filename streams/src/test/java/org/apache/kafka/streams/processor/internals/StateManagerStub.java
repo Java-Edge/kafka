@@ -18,12 +18,13 @@ package org.apache.kafka.streams.processor.internals;
 
 
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.streams.processor.CommitCallback;
 import org.apache.kafka.streams.processor.StateRestoreCallback;
 import org.apache.kafka.streams.processor.StateStore;
+import org.apache.kafka.streams.processor.internals.Task.TaskType;
 
 import java.io.File;
 import java.util.Map;
-import org.apache.kafka.streams.processor.internals.Task.TaskType;
 
 public class StateManagerStub implements StateManager {
 
@@ -34,7 +35,8 @@ public class StateManagerStub implements StateManager {
 
     @Override
     public void registerStore(final StateStore store,
-                              final StateRestoreCallback stateRestoreCallback) {}
+                              final StateRestoreCallback stateRestoreCallback,
+                              final CommitCallback checkpoint) {}
 
     @Override
     public void flush() {}
@@ -43,12 +45,12 @@ public class StateManagerStub implements StateManager {
     public void close() {}
 
     @Override
-    public StateStore getStore(final String name) {
+    public StateStore store(final String name) {
         return null;
     }
 
     @Override
-    public StateStore getGlobalStore(final String name) {
+    public StateStore globalStore(final String name) {
         return null;
     }
 

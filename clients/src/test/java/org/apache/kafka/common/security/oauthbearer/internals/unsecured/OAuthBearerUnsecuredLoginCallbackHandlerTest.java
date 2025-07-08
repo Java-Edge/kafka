@@ -16,8 +16,13 @@
  */
 package org.apache.kafka.common.security.oauthbearer.internals.unsecured;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import org.apache.kafka.common.security.auth.SaslExtensionsCallback;
+import org.apache.kafka.common.security.authenticator.TestJaasConfig;
+import org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule;
+import org.apache.kafka.common.security.oauthbearer.OAuthBearerTokenCallback;
+import org.apache.kafka.common.utils.MockTime;
+
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -26,16 +31,14 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import javax.security.auth.callback.Callback;
 import javax.security.auth.callback.UnsupportedCallbackException;
 
-import org.apache.kafka.common.security.auth.SaslExtensionsCallback;
-import org.apache.kafka.common.security.authenticator.TestJaasConfig;
-import org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule;
-import org.apache.kafka.common.security.oauthbearer.OAuthBearerTokenCallback;
-import org.apache.kafka.common.utils.MockTime;
-import org.junit.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class OAuthBearerUnsecuredLoginCallbackHandlerTest {
 
@@ -51,24 +54,24 @@ public class OAuthBearerUnsecuredLoginCallbackHandlerTest {
         assertEquals("1", callback.extensions().map().get("testId"));
     }
 
-    @Test(expected = IOException.class)
-    public void throwsErrorOnInvalidExtensionName() throws IOException, UnsupportedCallbackException {
+    @Test
+    public void throwsErrorOnInvalidExtensionName() {
         Map<String, String> options = new HashMap<>();
         options.put("unsecuredLoginExtension_test.Id", "1");
         OAuthBearerUnsecuredLoginCallbackHandler callbackHandler = createCallbackHandler(options, new MockTime());
         SaslExtensionsCallback callback = new SaslExtensionsCallback();
 
-        callbackHandler.handle(new Callback[] {callback});
+        assertThrows(IOException.class, () -> callbackHandler.handle(new Callback[] {callback}));
     }
 
-    @Test(expected = IOException.class)
-    public void throwsErrorOnInvalidExtensionValue() throws IOException, UnsupportedCallbackException {
+    @Test
+    public void throwsErrorOnInvalidExtensionValue() {
         Map<String, String> options = new HashMap<>();
         options.put("unsecuredLoginExtension_testId", "Çalifornia");
         OAuthBearerUnsecuredLoginCallbackHandler callbackHandler = createCallbackHandler(options, new MockTime());
         SaslExtensionsCallback callback = new SaslExtensionsCallback();
 
-        callbackHandler.handle(new Callback[] {callback});
+        assertThrows(IOException.class, () -> callbackHandler.handle(new Callback[] {callback}));
     }
 
     @Test
@@ -81,10 +84,10 @@ public class OAuthBearerUnsecuredLoginCallbackHandlerTest {
         OAuthBearerTokenCallback callback = new OAuthBearerTokenCallback();
         callbackHandler.handle(new Callback[] {callback});
         OAuthBearerUnsecuredJws jws = (OAuthBearerUnsecuredJws) callback.token();
-        assertNotNull("create token failed", jws);
+        assertNotNull(jws, "create token failed");
         long startMs = mockTime.milliseconds();
         confirmCorrectValues(jws, user, startMs, 1000 * 60 * 60);
-        assertEquals(new HashSet<>(Arrays.asList("sub", "iat", "exp")), jws.claims().keySet());
+        assertEquals(Set.of("sub", "iat", "exp"), jws.claims().keySet());
     }
 
     @SuppressWarnings("unchecked")
@@ -104,8 +107,8 @@ public class OAuthBearerUnsecuredLoginCallbackHandlerTest {
             options.put("unsecuredLoginListClaim_" + "emptyList1", "");
             options.put("unsecuredLoginListClaim_" + "emptyList2", ",");
             options.put("unsecuredLoginNumberClaim_" + "number", "1");
-            long lifetmeSeconds = 10000;
-            options.put("unsecuredLoginLifetimeSeconds", String.valueOf(lifetmeSeconds));
+            long lifetimeSeconds = 10000;
+            options.put("unsecuredLoginLifetimeSeconds", String.valueOf(lifetimeSeconds));
             options.put("unsecuredLoginPrincipalClaimName", principalClaimName);
             if (scopeClaimNameOptionValue != null)
                 options.put("unsecuredLoginScopeClaimName", scopeClaimNameOptionValue);
@@ -117,15 +120,15 @@ public class OAuthBearerUnsecuredLoginCallbackHandlerTest {
             OAuthBearerTokenCallback callback = new OAuthBearerTokenCallback();
             callbackHandler.handle(new Callback[] {callback});
             OAuthBearerUnsecuredJws jws = (OAuthBearerUnsecuredJws) callback.token();
-            assertNotNull("create token failed", jws);
+            assertNotNull(jws, "create token failed");
             long startMs = mockTime.milliseconds();
-            confirmCorrectValues(jws, user, startMs, lifetmeSeconds * 1000);
+            confirmCorrectValues(jws, user, startMs, lifetimeSeconds * 1000);
             Map<String, Object> claims = jws.claims();
-            assertEquals(new HashSet<>(Arrays.asList(actualScopeClaimName, principalClaimName, "iat", "exp", "number",
-                    "list", "emptyList1", "emptyList2")), claims.keySet());
-            assertEquals(new HashSet<>(Arrays.asList(explicitScope1, explicitScope2)),
+            assertEquals(Set.of(actualScopeClaimName, principalClaimName, "iat", "exp", "number",
+                    "list", "emptyList1", "emptyList2"), claims.keySet());
+            assertEquals(Set.of(explicitScope1, explicitScope2),
                     new HashSet<>((List<String>) claims.get(actualScopeClaimName)));
-            assertEquals(new HashSet<>(Arrays.asList(explicitScope1, explicitScope2)), jws.scope());
+            assertEquals(Set.of(explicitScope1, explicitScope2), jws.scope());
             assertEquals(1.0, jws.claim("number", Number.class));
             assertEquals(Arrays.asList("1", "2", ""), jws.claim("list", List.class));
             assertEquals(Collections.emptyList(), jws.claim("emptyList1", List.class));
@@ -142,7 +145,7 @@ public class OAuthBearerUnsecuredLoginCallbackHandlerTest {
         OAuthBearerUnsecuredLoginCallbackHandler callbackHandler = new OAuthBearerUnsecuredLoginCallbackHandler();
         callbackHandler.time(mockTime);
         callbackHandler.configure(Collections.emptyMap(), OAuthBearerLoginModule.OAUTHBEARER_MECHANISM,
-                Arrays.asList(config.getAppConfigurationEntry("KafkaClient")[0]));
+                Collections.singletonList(config.getAppConfigurationEntry("KafkaClient")[0]));
         return callbackHandler;
     }
 

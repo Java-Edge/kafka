@@ -18,16 +18,11 @@ package org.apache.kafka.streams.kstream.internals;
 
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.streams.kstream.ValueJoiner;
+import org.apache.kafka.streams.kstream.ValueJoinerWithKey;
 import org.apache.kafka.streams.kstream.ValueMapper;
 import org.apache.kafka.streams.kstream.ValueMapperWithKey;
-import org.apache.kafka.streams.kstream.ValueTransformer;
-import org.apache.kafka.streams.kstream.ValueTransformerSupplier;
-import org.apache.kafka.streams.kstream.ValueTransformerWithKey;
-import org.apache.kafka.streams.kstream.ValueTransformerWithKeySupplier;
-import org.apache.kafka.streams.kstream.internals.graph.StreamsGraphNode;
-import org.apache.kafka.streams.processor.ProcessorContext;
+import org.apache.kafka.streams.kstream.internals.graph.GraphNode;
 import org.apache.kafka.streams.processor.internals.InternalTopologyBuilder;
-import org.apache.kafka.streams.state.StoreBuilder;
 
 import java.util.Collection;
 import java.util.HashSet;
@@ -48,7 +43,7 @@ public abstract class AbstractStream<K, V> {
     protected final Serde<K> keySerde;
     protected final Serde<V> valueSerde;
     protected final Set<String> subTopologySourceNodes;
-    protected final StreamsGraphNode streamsGraphNode;
+    protected final GraphNode graphNode;
     protected final InternalStreamsBuilder builder;
 
     // This copy-constructor will allow to extend KStream
@@ -59,14 +54,14 @@ public abstract class AbstractStream<K, V> {
         this.keySerde = stream.keySerde;
         this.valueSerde = stream.valueSerde;
         this.subTopologySourceNodes = stream.subTopologySourceNodes;
-        this.streamsGraphNode = stream.streamsGraphNode;
+        this.graphNode = stream.graphNode;
     }
 
     AbstractStream(final String name,
                    final Serde<K> keySerde,
                    final Serde<V> valueSerde,
                    final Set<String> subTopologySourceNodes,
-                   final StreamsGraphNode streamsGraphNode,
+                   final GraphNode graphNode,
                    final InternalStreamsBuilder builder) {
         if (subTopologySourceNodes == null || subTopologySourceNodes.isEmpty()) {
             throw new IllegalArgumentException("parameter <sourceNodes> must not be null or empty");
@@ -77,7 +72,7 @@ public abstract class AbstractStream<K, V> {
         this.keySerde = keySerde;
         this.valueSerde = valueSerde;
         this.subTopologySourceNodes = subTopologySourceNodes;
-        this.streamsGraphNode = streamsGraphNode;
+        this.graphNode = graphNode;
     }
 
     // This method allows to expose the InternalTopologyBuilder instance
@@ -96,45 +91,22 @@ public abstract class AbstractStream<K, V> {
         return allSourceNodes;
     }
 
-    static <T2, T1, R> ValueJoiner<T2, T1, R> reverseJoiner(final ValueJoiner<T1, T2, R> joiner) {
+    static <VRight, VLeft, VOut> ValueJoiner<VRight, VLeft, VOut> reverseJoiner(final ValueJoiner<VLeft, VRight, VOut> joiner) {
         return (value2, value1) -> joiner.apply(value1, value2);
     }
 
-    static <K, V, VR> ValueMapperWithKey<K, V, VR> withKey(final ValueMapper<V, VR> valueMapper) {
-        Objects.requireNonNull(valueMapper, "valueMapper can't be null");
-        return (readOnlyKey, value) -> valueMapper.apply(value);
+    static <K, VRight, VLeft, VOut> ValueJoinerWithKey<K, VRight, VLeft, VOut> reverseJoinerWithKey(final ValueJoinerWithKey<K, VLeft, VRight, VOut> joiner) {
+        return (key, value2, value1) -> joiner.apply(key, value1, value2);
     }
 
-    static <K, V, VR> ValueTransformerWithKeySupplier<K, V, VR> toValueTransformerWithKeySupplier(
-        final ValueTransformerSupplier<V, VR> valueTransformerSupplier) {
-        Objects.requireNonNull(valueTransformerSupplier, "valueTransformerSupplier can't be null");
-        return new ValueTransformerWithKeySupplier<K, V, VR>() {
-            @Override
-            public ValueTransformerWithKey<K, V, VR> get() {
-                final ValueTransformer<V, VR> valueTransformer = valueTransformerSupplier.get();
-                return new ValueTransformerWithKey<K, V, VR>() {
-                    @Override
-                    public void init(final ProcessorContext context) {
-                        valueTransformer.init(context);
-                    }
+    static <K, V, VOut> ValueMapperWithKey<K, V, VOut> withKey(final ValueMapper<V, VOut> mapper) {
+        Objects.requireNonNull(mapper, "mapper cannot be null");
+        return (readOnlyKey, value) -> mapper.apply(value);
+    }
 
-                    @Override
-                    public VR transform(final K readOnlyKey, final V value) {
-                        return valueTransformer.transform(value);
-                    }
-
-                    @Override
-                    public void close() {
-                        valueTransformer.close();
-                    }
-                };
-            }
-
-            @Override
-            public Set<StoreBuilder<?>> stores() {
-                return valueTransformerSupplier.stores();
-            }
-        };
+    static <K, VLeft, VRight, VOut> ValueJoinerWithKey<K, VLeft, VRight, VOut> toValueJoinerWithKey(final ValueJoiner<VLeft, VRight, VOut> joiner) {
+        Objects.requireNonNull(joiner, "joiner cannot be null");
+        return (readOnlyKey, value1, value2) -> joiner.apply(value1, value2);
     }
 
     // for testing only

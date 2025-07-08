@@ -16,23 +16,24 @@
  */
 package org.apache.kafka.common.metrics.stats;
 
-import java.util.ArrayList;
-import java.util.List;
-
 import org.apache.kafka.common.metrics.CompoundStat;
 import org.apache.kafka.common.metrics.MetricConfig;
 import org.apache.kafka.common.metrics.stats.Histogram.BinScheme;
 import org.apache.kafka.common.metrics.stats.Histogram.ConstantBinScheme;
 import org.apache.kafka.common.metrics.stats.Histogram.LinearBinScheme;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * A compound stat that reports one or more percentiles
  */
 public class Percentiles extends SampledStat implements CompoundStat {
 
-    private final Logger log = LoggerFactory.getLogger(Percentiles.class);
+    private static final Logger log = LoggerFactory.getLogger(Percentiles.class);
 
     public enum BucketSizing {
         CONSTANT, LINEAR
@@ -113,11 +114,11 @@ public class Percentiles extends SampledStat implements CompoundStat {
     protected void update(Sample sample, MetricConfig config, double value, long timeMs) {
         final double boundedValue;
         if (value > max) {
-            log.warn("Received value {} which is greater than max recordable value {}, will be pinned to the max value",
+            log.debug("Received value {} which is greater than max recordable value {}, will be pinned to the max value",
                      value, max);
             boundedValue = max;
         } else if (value < min) {
-            log.warn("Received value {} which is less than min recordable value {}, will be pinned to the min value",
+            log.debug("Received value {} which is less than min recordable value {}, will be pinned to the min value",
                      value, min);
             boundedValue = min;
         } else {

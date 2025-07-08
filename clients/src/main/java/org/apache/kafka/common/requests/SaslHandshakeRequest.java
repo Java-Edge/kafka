@@ -20,9 +20,7 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.message.SaslHandshakeRequestData;
 import org.apache.kafka.common.message.SaslHandshakeResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.types.Struct;
-
-import java.nio.ByteBuffer;
+import org.apache.kafka.common.protocol.Readable;
 
 /**
  * Request from SASL client containing client SASL mechanism.
@@ -56,20 +54,12 @@ public class SaslHandshakeRequest extends AbstractRequest {
 
     private final SaslHandshakeRequestData data;
 
-    public SaslHandshakeRequest(SaslHandshakeRequestData data) {
-        this(data, ApiKeys.SASL_HANDSHAKE.latestVersion());
-    }
-
     public SaslHandshakeRequest(SaslHandshakeRequestData data, short version) {
         super(ApiKeys.SASL_HANDSHAKE, version);
         this.data = data;
     }
 
-    public SaslHandshakeRequest(Struct struct, short version) {
-        super(ApiKeys.SASL_HANDSHAKE, version);
-        this.data = new SaslHandshakeRequestData(struct, version);
-    }
-
+    @Override
     public SaslHandshakeRequestData data() {
         return data;
     }
@@ -81,13 +71,7 @@ public class SaslHandshakeRequest extends AbstractRequest {
         return new SaslHandshakeResponse(response);
     }
 
-    public static SaslHandshakeRequest parse(ByteBuffer buffer, short version) {
-        return new SaslHandshakeRequest(ApiKeys.SASL_HANDSHAKE.parseRequest(version, buffer), version);
-    }
-
-    @Override
-    protected Struct toStruct() {
-        return data.toStruct(version());
+    public static SaslHandshakeRequest parse(Readable readable, short version) {
+        return new SaslHandshakeRequest(new SaslHandshakeRequestData(readable, version), version);
     }
 }
-

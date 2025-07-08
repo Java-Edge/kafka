@@ -20,14 +20,16 @@ import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.Uuid;
+import org.apache.kafka.common.metrics.KafkaMetric;
 
 import java.io.Closeable;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 /**
@@ -72,15 +74,19 @@ public interface Consumer<K, V> extends Closeable {
     void subscribe(Pattern pattern);
 
     /**
+     * @see KafkaConsumer#subscribe(SubscriptionPattern, ConsumerRebalanceListener)
+     */
+    void subscribe(SubscriptionPattern pattern, ConsumerRebalanceListener callback);
+
+    /**
+     * @see KafkaConsumer#subscribe(SubscriptionPattern)
+     */
+    void subscribe(SubscriptionPattern pattern);
+
+    /**
      * @see KafkaConsumer#unsubscribe()
      */
     void unsubscribe();
-
-    /**
-     * @see KafkaConsumer#poll(long)
-     */
-    @Deprecated
-    ConsumerRecords<K, V> poll(long timeout);
 
     /**
      * @see KafkaConsumer#poll(Duration)
@@ -122,6 +128,15 @@ public interface Consumer<K, V> extends Closeable {
     void commitAsync(Map<TopicPartition, OffsetAndMetadata> offsets, OffsetCommitCallback callback);
 
     /**
+     * @see KafkaConsumer#registerMetricForSubscription(KafkaMetric)
+     */
+    void registerMetricForSubscription(KafkaMetric metric);
+
+    /**
+     * @see KafkaConsumer#unregisterMetricFromSubscription(KafkaMetric)
+     */
+    void unregisterMetricFromSubscription(KafkaMetric metric);
+    /**
      * @see KafkaConsumer#seek(TopicPartition, long)
      */
     void seek(TopicPartition partition, long offset);
@@ -152,18 +167,6 @@ public interface Consumer<K, V> extends Closeable {
     long position(TopicPartition partition, final Duration timeout);
 
     /**
-     * @see KafkaConsumer#committed(TopicPartition)
-     */
-    @Deprecated
-    OffsetAndMetadata committed(TopicPartition partition);
-
-    /**
-     * @see KafkaConsumer#committed(TopicPartition, Duration)
-     */
-    @Deprecated
-    OffsetAndMetadata committed(TopicPartition partition, final Duration timeout);
-
-    /**
      * @see KafkaConsumer#committed(Set)
      */
     Map<TopicPartition, OffsetAndMetadata> committed(Set<TopicPartition> partitions);
@@ -172,6 +175,11 @@ public interface Consumer<K, V> extends Closeable {
      * @see KafkaConsumer#committed(Set, Duration)
      */
     Map<TopicPartition, OffsetAndMetadata> committed(Set<TopicPartition> partitions, final Duration timeout);
+
+    /**
+     * See {@link KafkaConsumer#clientInstanceId(Duration)}}
+     */
+    Uuid clientInstanceId(Duration timeout);
 
     /**
      * @see KafkaConsumer#metrics()
@@ -244,6 +252,11 @@ public interface Consumer<K, V> extends Closeable {
     Map<TopicPartition, Long> endOffsets(Collection<TopicPartition> partitions, Duration timeout);
 
     /**
+     * @see KafkaConsumer#currentLag(TopicPartition)
+     */
+    OptionalLong currentLag(TopicPartition topicPartition);
+
+    /**
      * @see KafkaConsumer#groupMetadata()
      */
     ConsumerGroupMetadata groupMetadata();
@@ -254,24 +267,28 @@ public interface Consumer<K, V> extends Closeable {
     void enforceRebalance();
 
     /**
+     * @see KafkaConsumer#enforceRebalance(String)
+     */
+    void enforceRebalance(final String reason);
+
+    /**
      * @see KafkaConsumer#close()
      */
     void close();
 
     /**
-     * @see KafkaConsumer#close(long, TimeUnit)
-     */
-    @Deprecated
-    void close(long timeout, TimeUnit unit);
-
-    /**
      * @see KafkaConsumer#close(Duration)
      */
+    @Deprecated
     void close(Duration timeout);
+
+    /**
+     * @see KafkaConsumer#close(CloseOptions)
+     */
+    void close(final CloseOptions option);
 
     /**
      * @see KafkaConsumer#wakeup()
      */
     void wakeup();
-
 }

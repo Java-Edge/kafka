@@ -17,11 +17,6 @@
 
 package org.apache.kafka.streams.kstream.internals;
 
-import static java.time.Duration.ofMillis;
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.hamcrest.MatcherAssert.assertThat;
-
-import java.util.Properties;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
@@ -46,9 +41,17 @@ import org.apache.kafka.streams.test.TestRecord;
 import org.apache.kafka.test.MockAggregator;
 import org.apache.kafka.test.MockInitializer;
 import org.apache.kafka.test.StreamsTestUtils;
-import org.junit.Before;
-import org.junit.Test;
 
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.util.Properties;
+
+import static java.time.Duration.ofDays;
+import static java.time.Duration.ofMillis;
+import static org.hamcrest.CoreMatchers.equalTo;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class SessionWindowedCogroupedKStreamImplTest {
 
@@ -64,10 +67,9 @@ public class SessionWindowedCogroupedKStreamImplTest {
     private CogroupedKStream<String, String> cogroupedStream;
     private SessionWindowedCogroupedKStream<String, String> windowedCogroupedStream;
 
-    private final Properties props = StreamsTestUtils
-        .getStreamsConfig(Serdes.String(), Serdes.String());
+    private final Properties props = StreamsTestUtils.getStreamsConfig(Serdes.String(), Serdes.String());
 
-    @Before
+    @BeforeEach
     public void setup() {
         final KStream<String, String> stream = builder.stream(TOPIC, Consumed
             .with(Serdes.String(), Serdes.String()));
@@ -78,57 +80,64 @@ public class SessionWindowedCogroupedKStreamImplTest {
         groupedStream2 = stream2.groupByKey(Grouped.with(Serdes.String(), Serdes.String()));
         cogroupedStream = groupedStream.cogroup(MockAggregator.TOSTRING_ADDER)
                 .cogroup(groupedStream2, MockAggregator.TOSTRING_REMOVER);
-        windowedCogroupedStream = cogroupedStream.windowedBy(SessionWindows.with(ofMillis(100)));
+        windowedCogroupedStream = cogroupedStream.windowedBy(SessionWindows.ofInactivityGapAndGrace(ofMillis(100), ofDays(1)));
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void shouldNotHaveNullInitializerOnAggregate() {
-        windowedCogroupedStream.aggregate(null, sessionMerger);
+        assertThrows(NullPointerException.class, () -> windowedCogroupedStream.aggregate(null, sessionMerger));
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void shouldNotHaveNullSessionMergerOnAggregate() {
-        windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT, null);
+        assertThrows(NullPointerException.class, () -> windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT, null));
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void shouldNotHaveNullMaterializedOnAggregate() {
-        windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT, sessionMerger, (Named) null);
+        assertThrows(NullPointerException.class, () -> windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT,
+            sessionMerger, (Named) null));
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void shouldNotHaveNullSessionMerger2OnAggregate() {
-        windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT, null, Materialized.as("test"));
+        assertThrows(NullPointerException.class, () -> windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT,
+            null, Materialized.as("test")));
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void shouldNotHaveNullInitializer2OnAggregate() {
-        windowedCogroupedStream.aggregate(null, sessionMerger, Materialized.as("test"));
+        assertThrows(NullPointerException.class, () -> windowedCogroupedStream.aggregate(null, sessionMerger,
+            Materialized.as("test")));
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void shouldNotHaveNullMaterialized2OnAggregate() {
-        windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT, sessionMerger, Named.as("name"), null);
+        assertThrows(NullPointerException.class, () -> windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT,
+            sessionMerger, Named.as("name"), null));
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void shouldNotHaveNullSessionMerger3OnAggregate() {
-        windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT, null, Named.as("name"), Materialized.as("test"));
+        assertThrows(NullPointerException.class, () -> windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT,
+            null, Named.as("name"), Materialized.as("test")));
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void shouldNotHaveNullNamedOnAggregate() {
-        windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT, sessionMerger, null, Materialized.as("test"));
+        assertThrows(NullPointerException.class, () -> windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT,
+            sessionMerger, null, Materialized.as("test")));
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void shouldNotHaveNullInitializer3OnAggregate() {
-        windowedCogroupedStream.aggregate(null, sessionMerger, Named.as("name"), Materialized.as("test"));
+        assertThrows(NullPointerException.class, () -> windowedCogroupedStream.aggregate(null, sessionMerger,
+            Named.as("name"), Materialized.as("test")));
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void shouldNotHaveNullNamed2OnAggregate() {
-        windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT, sessionMerger, (Named) null);
+        assertThrows(NullPointerException.class, () -> windowedCogroupedStream.aggregate(MockInitializer.STRING_INIT, sessionMerger, (Named) null));
     }
 
     @Test
@@ -138,7 +147,7 @@ public class SessionWindowedCogroupedKStreamImplTest {
                 .with(Serdes.String(), Serdes.String()));
         groupedStream = stream.groupByKey(Grouped.with(Serdes.String(), Serdes.String()));
         groupedStream.cogroup(MockAggregator.TOSTRING_ADDER)
-                .windowedBy(SessionWindows.with(ofMillis(1)))
+                .windowedBy(SessionWindows.ofInactivityGapWithNoGrace(ofMillis(1)))
                 .aggregate(MockInitializer.STRING_INIT, sessionMerger, Named.as("foo"));
 
         assertThat(builder.build().describe().toString(), equalTo(
@@ -157,7 +166,7 @@ public class SessionWindowedCogroupedKStreamImplTest {
     @Test
     public void sessionWindowAggregateTest() {
         final KTable<Windowed<String>, String> customers = groupedStream.cogroup(MockAggregator.TOSTRING_ADDER)
-                .windowedBy(SessionWindows.with(ofMillis(500)))
+                .windowedBy(SessionWindows.ofInactivityGapWithNoGrace(ofMillis(500)))
                 .aggregate(MockInitializer.STRING_INIT, sessionMerger, Materialized.with(Serdes.String(), Serdes.String()));
         customers.toStream().to(OUTPUT);
 
@@ -181,7 +190,7 @@ public class SessionWindowedCogroupedKStreamImplTest {
     @Test
     public void sessionWindowAggregate2Test() {
         final KTable<Windowed<String>, String> customers = groupedStream.cogroup(MockAggregator.TOSTRING_ADDER)
-                .windowedBy(SessionWindows.with(ofMillis(500)))
+                .windowedBy(SessionWindows.ofInactivityGapWithNoGrace(ofMillis(500)))
                 .aggregate(MockInitializer.STRING_INIT, sessionMerger, Materialized.with(Serdes.String(), Serdes.String()));
         customers.toStream().to(OUTPUT);
 

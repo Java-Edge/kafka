@@ -16,12 +16,12 @@
  */
 package org.apache.kafka.connect.mirror;
 
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.protocol.types.Field;
 import org.apache.kafka.common.protocol.types.Schema;
 import org.apache.kafka.common.protocol.types.Struct;
 import org.apache.kafka.common.protocol.types.Type;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
 
 import java.nio.ByteBuffer;
 
@@ -39,9 +39,9 @@ public class OffsetSync {
             new Field(TOPIC_KEY, Type.STRING),
             new Field(PARTITION_KEY, Type.INT32));
 
-    private TopicPartition topicPartition;
-    private long upstreamOffset;
-    private long downstreamOffset;
+    private final TopicPartition topicPartition;
+    private final long upstreamOffset;
+    private final long downstreamOffset;
 
     public OffsetSync(TopicPartition topicPartition, long upstreamOffset, long downstreamOffset) {
         this.topicPartition = topicPartition;
@@ -117,4 +117,3 @@ public class OffsetSync {
         return serializeValue().array();
     }
 }
-

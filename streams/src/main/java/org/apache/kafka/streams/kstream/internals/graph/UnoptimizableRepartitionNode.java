@@ -29,7 +29,7 @@ public class UnoptimizableRepartitionNode<K, V> extends BaseRepartitionNode<K, V
 
     private UnoptimizableRepartitionNode(final String nodeName,
                                          final String sourceName,
-                                         final ProcessorParameters<K, V> processorParameters,
+                                         final ProcessorParameters<K, V, K, V> processorParameters,
                                          final Serde<K> keySerde,
                                          final Serde<V> valueSerde,
                                          final String sinkName,
@@ -53,11 +53,7 @@ public class UnoptimizableRepartitionNode<K, V> extends BaseRepartitionNode<K, V
     public void writeToTopology(final InternalTopologyBuilder topologyBuilder) {
         topologyBuilder.addInternalTopic(repartitionTopic, internalTopicProperties);
 
-        topologyBuilder.addProcessor(
-            processorParameters.processorName(),
-            processorParameters.processorSupplier(),
-            parentNodeNames()
-        );
+        processorParameters.addProcessorTo(topologyBuilder, parentNodeNames());
 
         topologyBuilder.addSink(
             sinkName,
@@ -88,7 +84,6 @@ public class UnoptimizableRepartitionNode<K, V> extends BaseRepartitionNode<K, V
     }
 
     public static final class UnoptimizableRepartitionNodeBuilder<K, V> extends BaseRepartitionNodeBuilder<K, V, UnoptimizableRepartitionNode<K, V>> {
-
         @Override
         public UnoptimizableRepartitionNode<K, V> build() {
             return new UnoptimizableRepartitionNode<>(nodeName,

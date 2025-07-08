@@ -20,10 +20,9 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.message.CreateTopicsResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
-import java.util.HashMap;
+import java.util.EnumMap;
 import java.util.Map;
 
 public class CreateTopicsResponse extends AbstractResponse {
@@ -46,20 +45,13 @@ public class CreateTopicsResponse extends AbstractResponse {
     private final CreateTopicsResponseData data;
 
     public CreateTopicsResponse(CreateTopicsResponseData data) {
+        super(ApiKeys.CREATE_TOPICS);
         this.data = data;
     }
 
-    public CreateTopicsResponse(Struct struct, short version) {
-        this.data = new CreateTopicsResponseData(struct, version);
-    }
-
+    @Override
     public CreateTopicsResponseData data() {
         return data;
-    }
-
-    @Override
-    protected Struct toStruct(short version) {
-        return data.toStruct(version);
     }
 
     @Override
@@ -68,17 +60,21 @@ public class CreateTopicsResponse extends AbstractResponse {
     }
 
     @Override
+    public void maybeSetThrottleTimeMs(int throttleTimeMs) {
+        data.setThrottleTimeMs(throttleTimeMs);
+    }
+
+    @Override
     public Map<Errors, Integer> errorCounts() {
-        HashMap<Errors, Integer> counts = new HashMap<>();
+        Map<Errors, Integer> counts = new EnumMap<>(Errors.class);
         data.topics().forEach(result ->
             updateErrorCounts(counts, Errors.forCode(result.errorCode()))
         );
         return counts;
     }
 
-    public static CreateTopicsResponse parse(ByteBuffer buffer, short version) {
-        return new CreateTopicsResponse(
-            ApiKeys.CREATE_TOPICS.responseSchema(version).read(buffer), version);
+    public static CreateTopicsResponse parse(Readable readable, short version) {
+        return new CreateTopicsResponse(new CreateTopicsResponseData(readable, version));
     }
 
     @Override

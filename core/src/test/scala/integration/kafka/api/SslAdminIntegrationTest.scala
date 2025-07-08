@@ -12,38 +12,42 @@
   */
 package kafka.api
 
-import java.io.File
 import java.util
-import java.util.Collections
 import java.util.concurrent._
-
+import java.util.Properties
 import com.yammer.metrics.core.Gauge
-import kafka.metrics.KafkaYammerMetrics
-import kafka.security.authorizer.AclAuthorizer
-import kafka.security.authorizer.AclEntry.{WildcardHost, WildcardPrincipalString}
-import kafka.server.KafkaConfig
-import kafka.utils.{CoreUtils, TestUtils}
-import org.apache.kafka.clients.admin.{Admin, AdminClientConfig, CreateAclsResult}
+import kafka.security.JaasTestUtils
+import kafka.utils.TestUtils
+import org.apache.kafka.clients.admin.{AdminClientConfig, CreateAclsResult, DescribeClusterOptions}
 import org.apache.kafka.common.acl._
-import org.apache.kafka.common.acl.AclOperation._
-import org.apache.kafka.common.acl.AclPermissionType._
+import org.apache.kafka.common.config.SslConfigs
+import org.apache.kafka.common.config.internals.BrokerSecurityConfigs
+import org.apache.kafka.common.network.ListenerName
 import org.apache.kafka.common.protocol.ApiKeys
-import org.apache.kafka.common.resource.{PatternType, Resource, ResourcePattern, ResourceType}
-import org.apache.kafka.common.resource.PatternType._
-import org.apache.kafka.common.resource.ResourceType._
-import org.apache.kafka.common.security.auth.{KafkaPrincipal, SecurityProtocol}
+import org.apache.kafka.common.resource.{PatternType, ResourcePattern, ResourceType}
+import org.apache.kafka.common.security.auth.{AuthenticationContext, KafkaPrincipal, SecurityProtocol, SslAuthenticationContext}
+import org.apache.kafka.common.security.authenticator.DefaultKafkaPrincipalBuilder
 import org.apache.kafka.server.authorizer._
-import org.junit.Assert.{assertEquals, assertFalse, assertNotNull, assertTrue}
-import org.junit.{Assert, Test}
+import org.apache.kafka.common.network.ConnectionMode
+import org.apache.kafka.common.utils.Utils
+import org.apache.kafka.metadata.authorizer.{ClusterMetadataAuthorizer, StandardAuthorizer}
+import org.apache.kafka.server.metrics.KafkaYammerMetrics
+import org.junit.jupiter.api.Assertions.{assertEquals, assertFalse, assertNotNull, assertThrows, assertTrue}
+import org.junit.jupiter.api.{AfterEach, Test, TestInfo}
 
 import scala.jdk.CollectionConverters._
-import scala.collection.mutable
+import scala.collection.{Seq, mutable}
+import scala.jdk.javaapi.OptionConverters
 
 object SslAdminIntegrationTest {
   @volatile var semaphore: Option[Semaphore] = None
   @volatile var executor: Option[ExecutorService] = None
   @volatile var lastUpdateRequestContext: Option[AuthorizableRequestContext] = None
-  class TestableAclAuthorizer extends AclAuthorizer {
+  val superuserCn = "super-user"
+  val serverUser = "server"
+  val clientCn = "client"
+
+  class TestableStandardAuthorizer extends StandardAuthorizer with ClusterMetadataAuthorizer {
     override def createAcls(requestContext: AuthorizableRequestContext,
                             aclBindings: util.List[AclBinding]): util.List[_ <: CompletionStage[AclCreateResult]] = {
       lastUpdateRequestContext = Some(requestContext)
@@ -63,11 +67,10 @@ object SslAdminIntegrationTest {
           semaphore.foreach(_.acquire())
           try {
             action.apply().asScala.zip(futures).foreach { case (baseFuture, resultFuture) =>
-              baseFuture.whenComplete { (result, exception) =>
-                if (exception != null)
-                  resultFuture.completeExceptionally(exception)
-                else
-                  resultFuture.complete(result)
+              try {
+                resultFuture.complete(baseFuture.toCompletableFuture.get())
+              } catch  {
+                case e: Throwable => resultFuture.completeExceptionally(e)
               }
             }
           } finally {
@@ -82,34 +85,92 @@ object SslAdminIntegrationTest {
       futures.asJava
     }
   }
+
+  class TestPrincipalBuilder extends DefaultKafkaPrincipalBuilder(null, null) {
+    private val Pattern = "O=A (.*?),CN=(.*?)".r
+
+    // Use fields from DN as principal to grant appropriate permissions
+    override def build(context: AuthenticationContext): KafkaPrincipal = {
+      if (context.securityProtocol().equals(SecurityProtocol.PLAINTEXT)) {
+        KafkaPrincipal.ANONYMOUS
+      } else {
+        val peerPrincipal = context.asInstanceOf[SslAuthenticationContext].session.getPeerPrincipal.getName
+        peerPrincipal match {
+          case Pattern(name, cn) =>
+            val principal =
+              if ((name == serverUser) || (cn == superuserCn)) serverUser
+              else if (cn == clientCn) clientCn
+              else KafkaPrincipal.ANONYMOUS.getName
+            new KafkaPrincipal(KafkaPrincipal.USER_TYPE, principal)
+          case _ =>
+            KafkaPrincipal.ANONYMOUS
+        }
+      }
+    }
+  }
 }
 
 class SslAdminIntegrationTest extends SaslSslAdminIntegrationTest {
-  override val authorizationAdmin = new AclAuthorizationAdmin
-  val clusterResourcePattern = new ResourcePattern(ResourceType.CLUSTER, Resource.CLUSTER_NAME, PatternType.LITERAL)
+  override val kraftAuthorizerClassName: String = classOf[SslAdminIntegrationTest.TestableStandardAuthorizer].getName
 
-  this.serverConfig.setProperty(KafkaConfig.ZkEnableSecureAclsProp, "true")
-
+  this.serverConfig.setProperty(BrokerSecurityConfigs.SSL_CLIENT_AUTH_CONFIG, "required")
+  this.serverConfig.setProperty(BrokerSecurityConfigs.PRINCIPAL_BUILDER_CLASS_CONFIG, classOf[SslAdminIntegrationTest.TestPrincipalBuilder].getName)
   override protected def securityProtocol = SecurityProtocol.SSL
-  override protected lazy val trustStoreFile = Some(File.createTempFile("truststore", ".jks"))
-  private val adminClients = mutable.Buffer.empty[Admin]
+  override val kafkaPrincipal = new KafkaPrincipal(KafkaPrincipal.USER_TYPE, SslAdminIntegrationTest.serverUser)
+
+  private val extraControllerSecurityProtocol = SecurityProtocol.SSL
 
   override def setUpSasl(): Unit = {
     SslAdminIntegrationTest.semaphore = None
     SslAdminIntegrationTest.executor = None
     SslAdminIntegrationTest.lastUpdateRequestContext = None
 
-    startSasl(jaasSections(List.empty, None, ZkSasl))
+    startSasl(jaasSections(List.empty, None))
   }
 
+  override def createConfig: util.Map[String, Object] = {
+    val config = new util.HashMap[String, Object]
+    config.put(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, "20000")
+    config.put(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, "40000")
+    config
+  }
+
+  override def kraftControllerConfigs(testInfo: TestInfo): Seq[Properties] = {
+    val configs = super.kraftControllerConfigs(testInfo)
+    JaasTestUtils.sslConfigs(ConnectionMode.SERVER, false, OptionConverters.toJava(trustStoreFile), s"controller")
+      .forEach((k, v) => configs.foreach(c => c.put(k, v)))
+    configs
+  }
+
+  override def extraControllerSecurityProtocols(): Seq[SecurityProtocol] = {
+    Seq(extraControllerSecurityProtocol)
+  }
+
+  @AfterEach
   override def tearDown(): Unit = {
     // Ensure semaphore doesn't block shutdown even if test has failed
     val semaphore = SslAdminIntegrationTest.semaphore
     SslAdminIntegrationTest.semaphore = None
     semaphore.foreach(s => s.release(s.getQueueLength))
 
-    adminClients.foreach(_.close())
     super.tearDown()
+  }
+
+  @Test
+  def testListNodesFromControllersIncludingFencedBrokers(): Unit = {
+    useBoostrapControllers()
+    client = createAdminClient
+    val result = client.describeCluster(new DescribeClusterOptions().includeFencedBrokers(true))
+    val exception = assertThrows(classOf[Exception], () => { result.nodes().get()})
+    assertTrue(exception.getCause.getCause.getMessage.contains("Cannot request fenced brokers from controller endpoint"))
+  }
+
+  @Test
+  def testListNodesFromControllers(): Unit = {
+    useBoostrapControllers()
+    client = createAdminClient
+    val result = client.describeCluster(new DescribeClusterOptions())
+    assertTrue(result.nodes().get().size().equals(controllerServers.size))
   }
 
   @Test
@@ -133,25 +194,29 @@ class SslAdminIntegrationTest extends SaslSslAdminIntegrationTest {
     SslAdminIntegrationTest.semaphore = Some(testSemaphore)
     waitForNoBlockedRequestThreads()
 
+    useBoostrapControllers()
     // Queue requests until all threads are blocked. ACL create requests are sent to least loaded
     // node, so we may need more than `numRequestThreads` requests to block all threads.
     val aclFutures = mutable.Buffer[CreateAclsResult]()
-    while (blockedRequestThreads.size < numRequestThreads) {
-      aclFutures += createAdminClient.createAcls(List(acl2).asJava)
-      assertTrue(s"Request threads not blocked numRequestThreads=$numRequestThreads blocked=$blockedRequestThreads",
-        aclFutures.size < numRequestThreads * 10)
+    // In KRaft mode, ACL creation is handled exclusively by controller servers, not brokers.
+    // Therefore, only the number of controller I/O threads is relevant in this context.
+    val numReqThreads = controllerServers.head.config.numIoThreads * controllerServers.size
+    while (blockedRequestThreads.size < numReqThreads) {
+      aclFutures += createAdminClient.createAcls(java.util.List.of(acl2))
+      assertTrue(aclFutures.size < numReqThreads * 10,
+        s"Request threads not blocked numRequestThreads=$numReqThreads blocked=$blockedRequestThreads aclFutures=${aclFutures.size}")
     }
     assertEquals(0, purgatoryMetric("NumDelayedOperations"))
     assertEquals(0, purgatoryMetric("PurgatorySize"))
 
     // Verify that operations on other clients are blocked
-    val describeFuture = createAdminClient.describeCluster().clusterId()
-    assertFalse(describeFuture.isDone)
+    val listPartitionReassignmentsFuture = createAdminClient.listPartitionReassignments().reassignments()
+    assertFalse(listPartitionReassignmentsFuture.isDone)
 
     // Release the semaphore and verify that all requests complete
     testSemaphore.release(aclFutures.size)
     waitForNoBlockedRequestThreads()
-    assertNotNull(describeFuture.get(10, TimeUnit.SECONDS))
+    assertNotNull(listPartitionReassignmentsFuture.get(10, TimeUnit.SECONDS))
     // If any of the requests time out since we were blocking the threads earlier, retry the request.
     val numTimedOut = aclFutures.count { future =>
       try {
@@ -166,7 +231,7 @@ class SslAdminIntegrationTest extends SaslSslAdminIntegrationTest {
       }
     }
     (0 until numTimedOut)
-      .map(_ => createAdminClient.createAcls(List(acl2).asJava))
+      .map(_ => createAdminClient.createAcls(java.util.List.of(acl2)))
       .foreach(_.all().get(30, TimeUnit.SECONDS))
   }
 
@@ -182,11 +247,16 @@ class SslAdminIntegrationTest extends SaslSslAdminIntegrationTest {
 
     waitForNoBlockedRequestThreads()
 
-    val aclFutures = (0 until numRequestThreads).map(_ => createAdminClient.createAcls(List(acl2).asJava))
+    useBoostrapControllers()
+    // In KRaft mode, ACL creation is handled exclusively by controller servers, not brokers.
+    // Therefore, only the number of controller I/O threads is relevant in this context.
+    val numReqThreads = controllerServers.head.config.numIoThreads * controllerServers.size
+    val aclFutures = (0 until numReqThreads).map(_ => createAdminClient.createAcls(java.util.List.of(acl2)))
+
     waitForNoBlockedRequestThreads()
     assertTrue(aclFutures.forall(future => !future.all.isDone))
     // Other requests should succeed even though ACL updates are blocked
-    assertNotNull(createAdminClient.describeCluster().clusterId().get(10, TimeUnit.SECONDS))
+    assertNotNull(createAdminClient.listPartitionReassignments().reassignments().get(10, TimeUnit.SECONDS))
     TestUtils.waitUntilTrue(() => purgatoryMetric("PurgatorySize") > 0, "PurgatorySize metrics not updated")
     TestUtils.waitUntilTrue(() => purgatoryMetric("NumDelayedOperations") > 0, "NumDelayedOperations metrics not updated")
 
@@ -199,23 +269,25 @@ class SslAdminIntegrationTest extends SaslSslAdminIntegrationTest {
   private def verifyAclUpdates(): Unit = {
     val acl = new AclBinding(new ResourcePattern(ResourceType.TOPIC, "mytopic3", PatternType.LITERAL),
       new AccessControlEntry("User:ANONYMOUS", "*", AclOperation.DESCRIBE, AclPermissionType.ALLOW))
+    val clientPrincipal = new KafkaPrincipal(KafkaPrincipal.USER_TYPE, SslAdminIntegrationTest.clientCn)
 
     def validateRequestContext(context: AuthorizableRequestContext, apiKey: ApiKeys): Unit = {
       assertEquals(SecurityProtocol.SSL, context.securityProtocol)
       assertEquals("SSL", context.listenerName)
-      assertEquals(KafkaPrincipal.ANONYMOUS, context.principal)
+      assertEquals(clientPrincipal, context.principal)
       assertEquals(apiKey.id.toInt, context.requestType)
       assertEquals(apiKey.latestVersion.toInt, context.requestVersion)
-      assertTrue(s"Invalid correlation id: ${context.correlationId}", context.correlationId > 0)
-      assertTrue(s"Invalid client id: ${context.clientId}", context.clientId.startsWith("adminclient"))
-      assertTrue(s"Invalid host address: ${context.clientAddress}", context.clientAddress.isLoopbackAddress)
+      assertTrue(context.correlationId > 0, s"Invalid correlation id: ${context.correlationId}")
+      assertTrue(context.clientId.startsWith("adminclient"), s"Invalid client id: ${context.clientId}")
+      assertTrue(context.clientAddress.isLoopbackAddress, s"Invalid host address: ${context.clientAddress}")
     }
 
     val testSemaphore = new Semaphore(0)
     SslAdminIntegrationTest.semaphore = Some(testSemaphore)
 
-    client = Admin.create(createConfig)
-    val results = client.createAcls(List(acl2, acl3).asJava).values
+    useBoostrapControllers()
+    client = createAdminClient
+    val results = client.createAcls(java.util.List.of(acl2, acl3)).values
     assertEquals(Set(acl2, acl3), results.keySet().asScala)
     assertFalse(results.values.asScala.exists(_.isDone))
     TestUtils.waitUntilTrue(() => testSemaphore.hasQueuedThreads, "Authorizer not blocked in createAcls")
@@ -224,7 +296,7 @@ class SslAdminIntegrationTest extends SaslSslAdminIntegrationTest {
     validateRequestContext(SslAdminIntegrationTest.lastUpdateRequestContext.get, ApiKeys.CREATE_ACLS)
 
     testSemaphore.acquire()
-    val results2 = client.deleteAcls(List(acl.toFilter, acl2.toFilter, acl3.toFilter).asJava).values
+    val results2 = client.deleteAcls(java.util.List.of(acl.toFilter, acl2.toFilter, acl3.toFilter)).values
     assertEquals(Set(acl.toFilter, acl2.toFilter, acl3.toFilter), results2.keySet.asScala)
     assertFalse(results2.values.asScala.exists(_.isDone))
     TestUtils.waitUntilTrue(() => testSemaphore.hasQueuedThreads, "Authorizer not blocked in deleteAcls")
@@ -236,14 +308,6 @@ class SslAdminIntegrationTest extends SaslSslAdminIntegrationTest {
     validateRequestContext(SslAdminIntegrationTest.lastUpdateRequestContext.get, ApiKeys.DELETE_ACLS)
   }
 
-  private def createAdminClient: Admin = {
-    val config = createConfig
-    config.put(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, "40000")
-    val client = Admin.create(config)
-    adminClients += client
-    client
-  }
-
   private def blockedRequestThreads: List[Thread] = {
     val requestThreads = Thread.getAllStackTraces.keySet.asScala
       .filter(_.getName.contains("data-plane-kafka-request-handler"))
@@ -251,7 +315,9 @@ class SslAdminIntegrationTest extends SaslSslAdminIntegrationTest {
     requestThreads.filter(_.getState == Thread.State.WAITING).toList
   }
 
-  private def numRequestThreads = servers.head.config.numIoThreads * servers.size
+  private def numRequestThreads = {
+    brokers.head.config.numIoThreads * (brokers.size + controllerServers.size)
+  }
 
   private def waitForNoBlockedRequestThreads(): Unit = {
     val (blockedThreads, _) = TestUtils.computeUntilTrue(blockedRequestThreads)(_.isEmpty)
@@ -263,57 +329,36 @@ class SslAdminIntegrationTest extends SaslSslAdminIntegrationTest {
     val metrics = allMetrics.filter { case (metricName, _) =>
       metricName.getMBeanName.contains("delayedOperation=AlterAcls") && metricName.getMBeanName.contains(s"name=$name")
     }.values.toList
-    assertTrue(s"Unable to find metric $name: allMetrics: ${allMetrics.keySet.map(_.getMBeanName)}", metrics.nonEmpty)
+    assertTrue(metrics.nonEmpty, s"Unable to find metric $name: allMetrics: ${allMetrics.keySet.map(_.getMBeanName)}")
     metrics.map(_.asInstanceOf[Gauge[Int]].value).sum
   }
 
-  class AclAuthorizationAdmin extends AuthorizationAdmin {
+  // Override the CN to create a principal based on it
+  override def superuserSecurityProps(certAlias: String): Properties = {
+    val props = JaasTestUtils.securityConfigs(ConnectionMode.CLIENT, securityProtocol, OptionConverters.toJava(trustStoreFile),
+      certAlias, SslAdminIntegrationTest.superuserCn, OptionConverters.toJava(clientSaslProperties))
+    props.remove(SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG)
+    props
+  }
 
-    override def authorizerClassName: String = classOf[SslAdminIntegrationTest.TestableAclAuthorizer].getName
+  // Override the CN to create a principal based on it
+  override def clientSecurityProps(certAlias: String): Properties = {
+    val props = JaasTestUtils.securityConfigs(ConnectionMode.CLIENT, securityProtocol, OptionConverters.toJava(trustStoreFile),
+      certAlias, SslAdminIntegrationTest.clientCn, OptionConverters.toJava(clientSaslProperties))
+    props.remove(SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG)
+    props
+  }
 
-    override def initializeAcls(): Unit = {
-      val authorizer = CoreUtils.createObject[Authorizer](classOf[AclAuthorizer].getName)
-      try {
-        authorizer.configure(configs.head.originals())
-        val ace = new AccessControlEntry(WildcardPrincipalString, WildcardHost, ALL, ALLOW)
-        authorizer.createAcls(null, List(new AclBinding(new ResourcePattern(TOPIC, "*", LITERAL), ace)).asJava)
-        authorizer.createAcls(null, List(new AclBinding(new ResourcePattern(GROUP, "*", LITERAL), ace)).asJava)
+  private def useBoostrapControllers(): Unit = {
+    val controllerListenerName = ListenerName.forSecurityProtocol(extraControllerSecurityProtocol)
+    val config = controllerServers.map { s =>
+      val listener = s.config.effectiveAdvertisedControllerListeners
+        .find(_.listener == controllerListenerName.value)
+        .getOrElse(throw new IllegalArgumentException(s"Could not find listener with name $controllerListenerName"))
+      Utils.formatAddress(listener.host, s.socketServer.boundPort(controllerListenerName))
+    }.mkString(",")
 
-        authorizer.createAcls(null, List(clusterAcl(ALLOW, CREATE),
-          clusterAcl(ALLOW, DELETE),
-          clusterAcl(ALLOW, CLUSTER_ACTION),
-          clusterAcl(ALLOW, ALTER_CONFIGS),
-          clusterAcl(ALLOW, ALTER))
-          .map(ace => new AclBinding(clusterResourcePattern, ace)).asJava)
-      } finally {
-        authorizer.close()
-      }
-    }
-
-    override def addClusterAcl(permissionType: AclPermissionType, operation: AclOperation): Unit = {
-      val ace = clusterAcl(permissionType, operation)
-      val aclBinding = new AclBinding(clusterResourcePattern, ace)
-      val authorizer = servers.head.dataPlaneRequestProcessor.authorizer.get
-      val prevAcls = authorizer.acls(new AclBindingFilter(clusterResourcePattern.toFilter, AccessControlEntryFilter.ANY))
-        .asScala.map(_.entry).toSet
-      authorizer.createAcls(null, Collections.singletonList(aclBinding))
-      TestUtils.waitAndVerifyAcls(prevAcls ++ Set(ace), authorizer, clusterResourcePattern)
-    }
-
-    override def removeClusterAcl(permissionType: AclPermissionType, operation: AclOperation): Unit = {
-      val ace = clusterAcl(permissionType, operation)
-      val authorizer = servers.head.dataPlaneRequestProcessor.authorizer.get
-      val clusterFilter = new AclBindingFilter(clusterResourcePattern.toFilter, AccessControlEntryFilter.ANY)
-      val prevAcls = authorizer.acls(clusterFilter).asScala.map(_.entry).toSet
-      val deleteFilter = new AclBindingFilter(clusterResourcePattern.toFilter, ace.toFilter)
-      Assert.assertFalse(authorizer.deleteAcls(null, Collections.singletonList(deleteFilter))
-        .get(0).toCompletableFuture.get.aclBindingDeleteResults().asScala.head.exception.isPresent)
-      TestUtils.waitAndVerifyAcls(prevAcls -- Set(ace), authorizer, clusterResourcePattern)
-    }
-
-    private def clusterAcl(permissionType: AclPermissionType, operation: AclOperation): AccessControlEntry = {
-      new AccessControlEntry(new KafkaPrincipal(KafkaPrincipal.USER_TYPE, "*").toString,
-        WildcardHost, operation, permissionType)
-    }
+    adminClientConfig.remove(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG)
+    adminClientConfig.put(AdminClientConfig.BOOTSTRAP_CONTROLLERS_CONFIG, config)
   }
 }

@@ -17,33 +17,25 @@
 
 package kafka.server
 
-import scala.collection.Seq
-
-import org.junit.{After, Before, Test}
-import kafka.zk.ZooKeeperTestHarness
+import org.junit.jupiter.api.{AfterEach, Test}
 import kafka.utils.TestUtils
 import TestUtils._
+import kafka.api.IntegrationTestHarness
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.TopicPartition
 import org.apache.kafka.common.serialization.StringSerializer
 
-class ReplicaFetchTest extends ZooKeeperTestHarness  {
-  var brokers: Seq[KafkaServer] = null
+class ReplicaFetchTest extends IntegrationTestHarness {
   val topic1 = "foo"
   val topic2 = "bar"
 
-  @Before
-  override def setUp(): Unit = {
-    super.setUp()
-    val props = createBrokerConfigs(2, zkConnect)
-    brokers = props.map(KafkaConfig.fromProps).map(TestUtils.createServer(_))
-  }
-
-  @After
+  @AfterEach
   override def tearDown(): Unit = {
     TestUtils.shutdownServers(brokers)
     super.tearDown()
   }
+
+  override def brokerCount: Int = 2
 
   @Test
   def testReplicaFetcherThread(): Unit = {
@@ -53,11 +45,11 @@ class ReplicaFetchTest extends ZooKeeperTestHarness  {
 
     // create a topic and partition and await leadership
     for (topic <- List(topic1,topic2)) {
-      createTopic(zkClient, topic, numPartitions = 1, replicationFactor = 2, servers = brokers)
+      createTopic(topic, replicationFactor = 2)
     }
 
     // send test messages to leader
-    val producer = TestUtils.createProducer(TestUtils.getBrokerListStrFromServers(brokers),
+    val producer = TestUtils.createProducer(TestUtils.plaintextBootstrapServers(brokers),
                                                keySerializer = new StringSerializer,
                                                valueSerializer = new StringSerializer)
     val records = testMessageList1.map(m => new ProducerRecord(topic1, m, m)) ++
@@ -69,9 +61,9 @@ class ReplicaFetchTest extends ZooKeeperTestHarness  {
       var result = true
       for (topic <- List(topic1, topic2)) {
         val tp = new TopicPartition(topic, partition)
-        val expectedOffset = brokers.head.getLogManager.getLog(tp).get.logEndOffset
+        val expectedOffset = brokers.head.logManager.getLog(tp).get.logEndOffset
         result = result && expectedOffset > 0 && brokers.forall { item =>
-          expectedOffset == item.getLogManager.getLog(tp).get.logEndOffset
+          expectedOffset == item.logManager.getLog(tp).get.logEndOffset
         }
       }
       result

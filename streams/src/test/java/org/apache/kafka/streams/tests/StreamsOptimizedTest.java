@@ -47,9 +47,9 @@ import java.util.regex.Pattern;
 
 import static java.time.Duration.ofMillis;
 
+@SuppressWarnings("deprecation")
 public class StreamsOptimizedTest {
 
-    @SuppressWarnings("deprecation") // TODO revisit in follow up PR
     public static void main(final String[] args) throws Exception {
         if (args.length < 1) {
             System.err.println("StreamsOptimizedTest requires one argument (properties-file) but no provided: ");
@@ -90,27 +90,27 @@ public class StreamsOptimizedTest {
             aggregator,
             Materialized.with(Serdes.String(), Serdes.Integer()))
             .toStream()
-            .peek((k, v) -> System.out.println(String.format("AGGREGATED key=%s value=%s", k, v)))
+            .peek((k, v) -> System.out.printf("AGGREGATED key=%s value=%s%n", k, v))
             .to(aggregationTopic, Produced.with(Serdes.String(), Serdes.Integer()));
 
 
         mappedStream.groupByKey()
             .reduce(reducer, Materialized.with(Serdes.String(), Serdes.String()))
             .toStream()
-            .peek((k, v) -> System.out.println(String.format("REDUCED key=%s value=%s", k, v)))
+            .peek((k, v) -> System.out.printf("REDUCED key=%s value=%s%n", k, v))
             .to(reduceTopic, Produced.with(Serdes.String(), Serdes.String()));
 
         mappedStream.join(countStream, (v1, v2) -> v1 + ":" + v2.toString(),
             JoinWindows.of(ofMillis(500)),
             StreamJoined.with(Serdes.String(), Serdes.String(), Serdes.Long()))
-            .peek((k, v) -> System.out.println(String.format("JOINED key=%s value=%s", k, v)))
+            .peek((k, v) -> System.out.printf("JOINED key=%s value=%s%n", k, v))
             .to(joinTopic, Produced.with(Serdes.String(), Serdes.String()));
 
         final Properties config = new Properties();
 
 
         config.setProperty(StreamsConfig.APPLICATION_ID_CONFIG, "StreamsOptimizedTest");
-        config.setProperty(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, "0");
+        config.setProperty(StreamsConfig.STATESTORE_CACHE_MAX_BYTES_CONFIG, "0");
         config.setProperty(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass().getName());
         config.setProperty(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass().getName());
         config.setProperty(StreamsConfig.adminClientPrefix(AdminClientConfig.RETRIES_CONFIG), "100");
@@ -125,7 +125,7 @@ public class StreamsOptimizedTest {
         streams.setStateListener((newState, oldState) -> {
             if (oldState == State.REBALANCING && newState == State.RUNNING) {
                 final int repartitionTopicCount = getCountOfRepartitionTopicsFound(topology.describe().toString(), repartitionTopicPattern);
-                System.out.println(String.format("REBALANCING -> RUNNING with REPARTITION TOPIC COUNT=%d", repartitionTopicCount));
+                System.out.printf("REBALANCING -> RUNNING with REPARTITION TOPIC COUNT=%d%n", repartitionTopicCount);
                 System.out.flush();
             }
         });
@@ -149,7 +149,7 @@ public class StreamsOptimizedTest {
         final List<String> repartitionTopicsFound = new ArrayList<>();
         while (matcher.find()) {
             final String repartitionTopic = matcher.group();
-            System.out.println(String.format("REPARTITION TOPIC found -> %s", repartitionTopic));
+            System.out.printf("REPARTITION TOPIC found -> %s%n", repartitionTopic);
             repartitionTopicsFound.add(repartitionTopic);
         }
         return repartitionTopicsFound.size();

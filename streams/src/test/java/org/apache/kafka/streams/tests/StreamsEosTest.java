@@ -48,10 +48,9 @@ public class StreamsEosTest {
         }
 
         if ("process".equals(command) || "process-complex".equals(command)) {
-            if (!StreamsConfig.EXACTLY_ONCE.equals(processingGuarantee) &&
-                !StreamsConfig.EXACTLY_ONCE_BETA.equals(processingGuarantee)) {
+            if (!StreamsConfig.EXACTLY_ONCE_V2.equals(processingGuarantee)) {
 
-                System.err.println("processingGuarantee must be either " + StreamsConfig.EXACTLY_ONCE + " or " + StreamsConfig.EXACTLY_ONCE_BETA);
+                System.err.println("processingGuarantee must be " + StreamsConfig.EXACTLY_ONCE_V2);
                 Exit.exit(1);
             }
         }
@@ -77,10 +76,10 @@ public class StreamsEosTest {
                 new EosTestClient(streamsProperties, true).start();
                 break;
             case "verify":
-                EosTestDriver.verify(kafka, false);
+                EosTestDriver.verify(kafka, false, streamsProperties.getProperty("group.protocol"));
                 break;
             case "verify-complex":
-                EosTestDriver.verify(kafka, true);
+                EosTestDriver.verify(kafka, true, streamsProperties.getProperty("group.protocol"));
                 break;
             default:
                 System.out.println("unknown command: " + command);

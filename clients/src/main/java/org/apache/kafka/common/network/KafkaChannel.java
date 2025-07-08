@@ -20,6 +20,7 @@ import org.apache.kafka.common.errors.AuthenticationException;
 import org.apache.kafka.common.errors.SslAuthenticationException;
 import org.apache.kafka.common.memory.MemoryPool;
 import org.apache.kafka.common.security.auth.KafkaPrincipal;
+import org.apache.kafka.common.security.auth.KafkaPrincipalSerde;
 import org.apache.kafka.common.utils.Utils;
 
 import java.io.IOException;
@@ -123,7 +124,7 @@ public class KafkaChannel implements AutoCloseable {
     private final MemoryPool memoryPool;
     private final ChannelMetadataRegistry metadataRegistry;
     private NetworkReceive receive;
-    private Send send;
+    private NetworkSend send;
     // Track connection and mute state of channels to enable outstanding requests on channels to be
     // processed after the channel is disconnected.
     private boolean disconnected;
@@ -159,6 +160,10 @@ public class KafkaChannel implements AutoCloseable {
      */
     public KafkaPrincipal principal() {
         return authenticator.principal();
+    }
+
+    public Optional<KafkaPrincipalSerde> principalSerde() {
+        return authenticator.principalSerde();
     }
 
     /**
@@ -336,13 +341,13 @@ public class KafkaChannel implements AutoCloseable {
     }
 
     public boolean isInMutableState() {
-        //some requests do not require memory, so if we do not know what the current (or future) request is
-        //(receive == null) we dont mute. we also dont mute if whatever memory required has already been
-        //successfully allocated (if none is required for the currently-being-read request
-        //receive.memoryAllocated() is expected to return true)
+        // Some requests do not require memory, so if we do not know what the current (or future) request is
+        // (receive == null) we don't mute. We also don't mute if whatever memory required has already been
+        // successfully allocated (if none is required for the currently-being-read request
+        // receive.memoryAllocated() is expected to return true)
         if (receive == null || receive.memoryAllocated())
             return false;
-        //also cannot mute if underlying transport is not in the ready state
+        // also cannot mute if underlying transport is not in the ready state
         return transportLayer.ready();
     }
 
@@ -364,6 +369,16 @@ public class KafkaChannel implements AutoCloseable {
         return transportLayer.socketChannel().socket().getInetAddress();
     }
 
+    /**
+     * Returns the port to which this channel's socket is connected or 0 if the socket has never been connected.
+     *
+     * If the socket was connected prior to being closed, then this method will continue to return the
+     * connected port number after the socket is closed.
+     */
+    public int socketPort() {
+        return transportLayer.socketChannel().socket().getPort();
+    }
+
     public String socketDescription() {
         Socket socket = transportLayer.socketChannel().socket();
         if (socket.getInetAddress() == null)
@@ -371,18 +386,18 @@ public class KafkaChannel implements AutoCloseable {
         return socket.getInetAddress().toString();
     }
 
-    public void setSend(Send send) {
+    public void setSend(NetworkSend send) {
         if (this.send != null)
             throw new IllegalStateException("Attempt to begin a send operation with prior send operation still in progress, connection id is " + id);
         this.send = send;
         this.transportLayer.addInterestOps(SelectionKey.OP_WRITE);
     }
 
-    public Send maybeCompleteSend() {
+    public NetworkSend maybeCompleteSend() {
         if (send != null && send.completed()) {
             midWrite = false;
             transportLayer.removeInterestOps(SelectionKey.OP_WRITE);
-            Send result = send;
+            NetworkSend result = send;
             send = null;
             return result;
         }
@@ -531,8 +546,8 @@ public class KafkaChannel implements AutoCloseable {
          * Re-authentication is disabled if there is no session expiration time, in
          * which case the SASL handshake network receive will be processed normally,
          * which results in a failure result being sent to the client. Also, no need to
-         * check if we are muted since since we are processing a received packet when we
-         * invoke this.
+         * check if we are muted since we are processing a received packet when we invoke
+         * this.
          */
         if (authenticator.serverSessionExpirationTimeNanos() == null)
             return false;

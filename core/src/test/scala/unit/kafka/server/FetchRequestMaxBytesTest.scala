@@ -17,17 +17,17 @@
 
 package kafka.server
 
-import java.util.{Optional, Properties}
-
-import kafka.log.LogConfig
 import kafka.utils.TestUtils
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord}
-import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.record.MemoryRecords
+import org.apache.kafka.common.config.TopicConfig
+import org.apache.kafka.common.{TopicPartition, Uuid}
 import org.apache.kafka.common.requests.FetchRequest.PartitionData
 import org.apache.kafka.common.requests.{FetchRequest, FetchResponse}
-import org.junit.{Assert, Test}
+import org.apache.kafka.server.config.ServerConfigs
+import org.junit.jupiter.api.Assertions._
+import org.junit.jupiter.api.{AfterEach, BeforeEach, Test, TestInfo}
 
+import java.util.{Optional, Properties}
 import scala.jdk.CollectionConverters._
 
 /**
@@ -36,7 +36,7 @@ import scala.jdk.CollectionConverters._
 class FetchRequestMaxBytesTest extends BaseRequestTest {
   override def brokerCount: Int = 1
 
-  private var producer: KafkaProducer[Array[Byte], Array[Byte]] = null
+  private var producer: KafkaProducer[Array[Byte], Array[Byte]] = _
   private val testTopic = "testTopic"
   private val testTopicPartition = new TopicPartition(testTopic, 0)
   private val messages = IndexedSeq(
@@ -58,11 +58,13 @@ class FetchRequestMaxBytesTest extends BaseRequestTest {
     array
   }
 
-  override def setUp(): Unit = {
-    super.setUp()
-    producer = TestUtils.createProducer(TestUtils.getBrokerListStrFromServers(servers))
+  @BeforeEach
+  override def setUp(testInfo: TestInfo): Unit = {
+    super.setUp(testInfo)
+    producer = TestUtils.createProducer(bootstrapServers())
   }
 
+  @AfterEach
   override def tearDown(): Unit = {
     if (producer != null)
       producer.close()
@@ -71,12 +73,12 @@ class FetchRequestMaxBytesTest extends BaseRequestTest {
 
   override protected def brokerPropertyOverrides(properties: Properties): Unit = {
     super.brokerPropertyOverrides(properties)
-    properties.put(KafkaConfig.FetchMaxBytes, "1024")
+    properties.put(ServerConfigs.FETCH_MAX_BYTES_CONFIG, "1024")
   }
 
   private def createTopics(): Unit = {
     val topicConfig = new Properties
-    topicConfig.setProperty(LogConfig.MinInSyncReplicasProp, 1.toString)
+    topicConfig.setProperty(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, 1.toString)
     createTopic(testTopic,
                 numPartitions = 1, 
                 replicationFactor = 1,
@@ -90,8 +92,8 @@ class FetchRequestMaxBytesTest extends BaseRequestTest {
     })
   }
 
-  private def sendFetchRequest(leaderId: Int, request: FetchRequest): FetchResponse[MemoryRecords] = {
-    connectAndReceive[FetchResponse[MemoryRecords]](request, destination = brokerSocketServer(leaderId))
+  private def sendFetchRequest(leaderId: Int, request: FetchRequest): FetchResponse = {
+    connectAndReceive[FetchResponse](request, destination = brokerSocketServer(leaderId))
   }
 
   /**
@@ -111,21 +113,22 @@ class FetchRequestMaxBytesTest extends BaseRequestTest {
 
   private def expectNextRecords(expected: IndexedSeq[Array[Byte]],
                                 fetchOffset: Long): Unit = {
+    val requestVersion = 4: Short
     val response = sendFetchRequest(0,
-      FetchRequest.Builder.forConsumer(Int.MaxValue, 0,
+      FetchRequest.Builder.forConsumer(requestVersion, Int.MaxValue, 0,
         Map(testTopicPartition ->
-          new PartitionData(fetchOffset, 0, Integer.MAX_VALUE, Optional.empty())).asJava).build(3))
-    val records = response.responseData().get(testTopicPartition).records.records()
-    Assert.assertNotNull(records)
+          new PartitionData(Uuid.ZERO_UUID, fetchOffset, 0, Integer.MAX_VALUE, Optional.empty())).asJava).build(requestVersion))
+    val records = FetchResponse.recordsOrFail(response.responseData(getTopicNames().asJava, requestVersion).get(testTopicPartition)).records()
+    assertNotNull(records)
     val recordsList = records.asScala.toList
-    Assert.assertEquals(expected.size, recordsList.size)
+    assertEquals(expected.size, recordsList.size)
     recordsList.zipWithIndex.foreach {
       case (record, i) => {
         val buffer = record.value().duplicate()
         val array = new Array[Byte](buffer.remaining())
         buffer.get(array)
-        Assert.assertArrayEquals(s"expectNextRecords unexpected element ${i}",
-          expected(i), array)
+        assertArrayEquals(expected(i),
+          array, s"expectNextRecords unexpected element $i")
       }
     }
   }

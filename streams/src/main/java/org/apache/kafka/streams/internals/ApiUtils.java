@@ -18,6 +18,8 @@ package org.apache.kafka.streams.internals;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Objects;
+import java.util.function.Supplier;
 
 import static java.lang.String.format;
 
@@ -74,5 +76,18 @@ public final class ApiUtils {
      */
     public static String prepareMillisCheckFailMsgPrefix(final Object value, final String name) {
         return format(MILLISECOND_VALIDATION_FAIL_MSG_FRMT, name, value);
+    }
+
+    /**
+     * @throws IllegalArgumentException if the same instance is obtained each time
+     */
+    public static void checkSupplier(final Supplier<?> processorSupplier) {
+        Objects.requireNonNull(processorSupplier, "processorSupplier cannot be null");
+
+        if (processorSupplier.get() == processorSupplier.get()) {
+            final String supplierClass = processorSupplier.getClass().getName();
+            throw new IllegalArgumentException(String.format("%s generates single reference." +
+                    " %s#get() must return a new object each time it is called.", supplierClass, supplierClass));
+        }
     }
 }

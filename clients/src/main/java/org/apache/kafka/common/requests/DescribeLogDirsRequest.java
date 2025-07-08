@@ -20,9 +20,8 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.message.DescribeLogDirsRequestData;
 import org.apache.kafka.common.message.DescribeLogDirsResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.types.Struct;
-
-import java.nio.ByteBuffer;
+import org.apache.kafka.common.protocol.Errors;
+import org.apache.kafka.common.protocol.Readable;
 
 public class DescribeLogDirsRequest extends AbstractRequest {
 
@@ -47,35 +46,28 @@ public class DescribeLogDirsRequest extends AbstractRequest {
         }
     }
 
-    public DescribeLogDirsRequest(Struct struct, short version) {
-        super(ApiKeys.DESCRIBE_LOG_DIRS, version);
-        this.data = new DescribeLogDirsRequestData(struct, version);
-    }
-
     public DescribeLogDirsRequest(DescribeLogDirsRequestData data, short version) {
         super(ApiKeys.DESCRIBE_LOG_DIRS, version);
         this.data = data;
     }
 
+    @Override
     public DescribeLogDirsRequestData data() {
         return data;
     }
 
     @Override
-    protected Struct toStruct() {
-        return data.toStruct(version());
-    }
-
-    @Override
     public AbstractResponse getErrorResponse(int throttleTimeMs, Throwable e) {
-        return new DescribeLogDirsResponse(new DescribeLogDirsResponseData().setThrottleTimeMs(throttleTimeMs));
+        return new DescribeLogDirsResponse(new DescribeLogDirsResponseData()
+                .setThrottleTimeMs(throttleTimeMs)
+                .setErrorCode(Errors.forException(e).code()));
     }
 
     public boolean isAllTopicPartitions() {
         return data.topics() == null;
     }
 
-    public static DescribeLogDirsRequest parse(ByteBuffer buffer, short version) {
-        return new DescribeLogDirsRequest(ApiKeys.DESCRIBE_LOG_DIRS.parseRequest(version, buffer), version);
+    public static DescribeLogDirsRequest parse(Readable readable, short version) {
+        return new DescribeLogDirsRequest(new DescribeLogDirsRequestData(readable, version), version);
     }
 }

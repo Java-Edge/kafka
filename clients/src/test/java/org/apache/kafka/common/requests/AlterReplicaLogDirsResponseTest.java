@@ -16,16 +16,18 @@
  */
 package org.apache.kafka.common.requests;
 
-import java.util.Map;
-
 import org.apache.kafka.common.message.AlterReplicaLogDirsResponseData;
 import org.apache.kafka.common.message.AlterReplicaLogDirsResponseData.AlterReplicaLogDirPartitionResult;
 import org.apache.kafka.common.message.AlterReplicaLogDirsResponseData.AlterReplicaLogDirTopicResult;
 import org.apache.kafka.common.protocol.Errors;
-import org.junit.Test;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.Collections;
+import java.util.Map;
 
 import static java.util.Arrays.asList;
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class AlterReplicaLogDirsResponseTest {
 
@@ -44,7 +46,7 @@ public class AlterReplicaLogDirsResponseTest {
                                                 .setErrorCode(Errors.NONE.code()))),
                         new AlterReplicaLogDirTopicResult()
                                 .setTopicName("t1")
-                                .setPartitions(asList(
+                                .setPartitions(Collections.singletonList(
                                         new AlterReplicaLogDirPartitionResult()
                                                 .setPartitionIndex(0)
                                                 .setErrorCode(Errors.LOG_DIR_NOT_FOUND.code())))));

@@ -17,15 +17,15 @@
 
 package org.apache.kafka.common.requests;
 
+import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.message.AlterPartitionReassignmentsRequestData;
 import org.apache.kafka.common.message.AlterPartitionReassignmentsRequestData.ReassignableTopic;
 import org.apache.kafka.common.message.AlterPartitionReassignmentsResponseData;
 import org.apache.kafka.common.message.AlterPartitionReassignmentsResponseData.ReassignablePartitionResponse;
 import org.apache.kafka.common.message.AlterPartitionReassignmentsResponseData.ReassignableTopicResponse;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -42,6 +42,11 @@ public class AlterPartitionReassignmentsRequest extends AbstractRequest {
 
         @Override
         public AlterPartitionReassignmentsRequest build(short version) {
+            if (!data.allowReplicationFactorChange() && version < 1) {
+                throw new UnsupportedVersionException("The broker does not support the AllowReplicationFactorChange " +
+                        "option for the AlterPartitionReassignments API. Consider re-sending the request without the " +
+                        "option or updating the server version");
+            }
             return new AlterPartitionReassignmentsRequest(data, version);
         }
 
@@ -52,37 +57,19 @@ public class AlterPartitionReassignmentsRequest extends AbstractRequest {
     }
 
     private final AlterPartitionReassignmentsRequestData data;
-    private final short version;
 
     private AlterPartitionReassignmentsRequest(AlterPartitionReassignmentsRequestData data, short version) {
         super(ApiKeys.ALTER_PARTITION_REASSIGNMENTS, version);
         this.data = data;
-        this.version = version;
     }
 
-    AlterPartitionReassignmentsRequest(Struct struct, short version) {
-        super(ApiKeys.ALTER_PARTITION_REASSIGNMENTS, version);
-        this.data = new AlterPartitionReassignmentsRequestData(struct, version);
-        this.version = version;
-    }
-
-    public static AlterPartitionReassignmentsRequest parse(ByteBuffer buffer, short version) {
-        return new AlterPartitionReassignmentsRequest(
-                ApiKeys.ALTER_PARTITION_REASSIGNMENTS.parseRequest(version, buffer),
-                version
-        );
+    public static AlterPartitionReassignmentsRequest parse(Readable readable, short version) {
+        return new AlterPartitionReassignmentsRequest(new AlterPartitionReassignmentsRequestData(
+            readable, version), version);
     }
 
     public AlterPartitionReassignmentsRequestData data() {
         return data;
-    }
-
-    /**
-     * Visible for testing.
-     */
-    @Override
-    public Struct toStruct() {
-        return data.toStruct(version);
     }
 
     @Override

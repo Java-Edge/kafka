@@ -16,23 +16,33 @@
  */
 package kafka.server
 
-import kafka.server.QuotaType.Request
 import org.apache.kafka.common.metrics.Quota
+import org.apache.kafka.server.config.ClientQuotaManagerConfig
+import org.apache.kafka.server.quota.{ClientQuotaManager, QuotaType}
+import org.apache.kafka.server.quota.ClientQuotaEntity
+import org.junit.jupiter.api.Assertions._
+import org.junit.jupiter.api.Test
 
-import org.junit.Assert._
-import org.junit.Test
+import java.util.Optional
 
 class ClientRequestQuotaManagerTest extends BaseClientQuotaManagerTest {
-  private val config = ClientQuotaManagerConfig()
+  private val config = new ClientQuotaManagerConfig()
 
   @Test
   def testRequestPercentageQuotaViolation(): Unit = {
-    val clientRequestQuotaManager = new ClientRequestQuotaManager(config, metrics, time, "", None)
-    clientRequestQuotaManager.updateQuota(Some("ANONYMOUS"), Some("test-client"), Some("test-client"), Some(Quota.upperBound(1)))
-    val queueSizeMetric = metrics.metrics().get(metrics.metricName("queue-size", Request.toString, ""))
-    def millisToPercent(millis: Double) = millis * 1000 * 1000 * ClientRequestQuotaManager.NanosToPercentagePerSecond
+    val clientRequestQuotaManager = new ClientRequestQuotaManager(config, metrics, time, "", Optional.empty())
+    val userEntity: ClientQuotaEntity.ConfigEntity = new ClientQuotaManager.UserEntity("ANONYMOUS")
+    val clientEntity: ClientQuotaEntity.ConfigEntity = new ClientQuotaManager.ClientIdEntity("test-client")
+
+    clientRequestQuotaManager.updateQuota(
+      Optional.of(userEntity),
+      Optional.of(clientEntity),
+      Optional.of(Quota.upperBound(1))
+    )
+    val queueSizeMetric = metrics.metrics().get(metrics.metricName("queue-size", QuotaType.REQUEST.toString, ""))
+    def millisToPercent(millis: Double) = millis * 1000 * 1000 * ClientRequestQuotaManager.NANOS_TO_PERCENTAGE_PER_SECOND
     try {
-      // We have 10 second windows. Make sure that there is no quota violation
+      // We have 10 seconds windows. Make sure that there is no quota violation
       // if we are under the quota
       for (_ <- 0 until 10) {
         assertEquals(0, maybeRecord(clientRequestQuotaManager, "ANONYMOUS", "test-client", millisToPercent(4)))
@@ -48,17 +58,17 @@ class ClientRequestQuotaManagerTest extends BaseClientQuotaManagerTest {
       time.sleep(500)
       val throttleTime = maybeRecord(clientRequestQuotaManager, "ANONYMOUS", "test-client", millisToPercent(67.1))
 
-      assertEquals("Should be throttled", 210, throttleTime)
+      assertEquals(210, throttleTime, "Should be throttled")
 
       throttle(clientRequestQuotaManager, "ANONYMOUS", "test-client", throttleTime, callback)
       assertEquals(1, queueSizeMetric.metricValue.asInstanceOf[Double].toInt)
       // After a request is delayed, the callback cannot be triggered immediately
-      clientRequestQuotaManager.throttledChannelReaper.doWork()
+      clientRequestQuotaManager.processThrottledChannelReaperDoWork()
       assertEquals(0, numCallbacks)
       time.sleep(throttleTime)
 
       // Callback can only be triggered after the delay time passes
-      clientRequestQuotaManager.throttledChannelReaper.doWork()
+      clientRequestQuotaManager.processThrottledChannelReaperDoWork()
       assertEquals(0, queueSizeMetric.metricValue.asInstanceOf[Double].toInt)
       assertEquals(1, numCallbacks)
 
@@ -68,8 +78,8 @@ class ClientRequestQuotaManagerTest extends BaseClientQuotaManagerTest {
         time.sleep(1000)
       }
 
-      assertEquals("Should be unthrottled since bursty sample has rolled over",
-        0, maybeRecord(clientRequestQuotaManager, "ANONYMOUS", "test-client", 0))
+      assertEquals(0,
+        maybeRecord(clientRequestQuotaManager, "ANONYMOUS", "test-client", 0), "Should be unthrottled since bursty sample has rolled over")
 
       // Create a very large spike which requires > one quota window to bring within quota
       assertEquals(1000, maybeRecord(clientRequestQuotaManager, "ANONYMOUS", "test-client", millisToPercent(500)))
@@ -78,8 +88,8 @@ class ClientRequestQuotaManagerTest extends BaseClientQuotaManagerTest {
         assertEquals(1000, maybeRecord(clientRequestQuotaManager, "ANONYMOUS", "test-client", 0))
       }
       time.sleep(1000)
-      assertEquals("Should be unthrottled since bursty sample has rolled over",
-        0, maybeRecord(clientRequestQuotaManager, "ANONYMOUS", "test-client", 0))
+      assertEquals(0,
+        maybeRecord(clientRequestQuotaManager, "ANONYMOUS", "test-client", 0), "Should be unthrottled since bursty sample has rolled over")
 
     } finally {
       clientRequestQuotaManager.shutdown()

@@ -20,9 +20,8 @@ import org.apache.kafka.common.message.DescribeConfigsRequestData;
 import org.apache.kafka.common.message.DescribeConfigsResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
 import java.util.stream.Collectors;
 
 public class DescribeConfigsRequest extends AbstractRequest {
@@ -48,18 +47,9 @@ public class DescribeConfigsRequest extends AbstractRequest {
         this.data = data;
     }
 
-    public DescribeConfigsRequest(Struct struct, short version) {
-        super(ApiKeys.DESCRIBE_CONFIGS, version);
-        this.data = new DescribeConfigsRequestData(struct, version);
-    }
-
+    @Override
     public DescribeConfigsRequestData data() {
         return data;
-    }
-
-    @Override
-    protected Struct toStruct() {
-        return data.toStruct(version());
     }
 
     @Override
@@ -67,16 +57,16 @@ public class DescribeConfigsRequest extends AbstractRequest {
         Errors error = Errors.forException(e);
         return new DescribeConfigsResponse(new DescribeConfigsResponseData()
                 .setThrottleTimeMs(throttleTimeMs)
-                .setResults(data.resources().stream().map(result -> {
-                    return new DescribeConfigsResponseData.DescribeConfigsResult().setErrorCode(error.code())
+                .setResults(data.resources().stream().map(result ->
+                    new DescribeConfigsResponseData.DescribeConfigsResult().setErrorCode(error.code())
                             .setErrorMessage(error.message())
                             .setResourceName(result.resourceName())
-                            .setResourceType(result.resourceType());
-                }).collect(Collectors.toList())
+                            .setResourceType(result.resourceType()))
+                .collect(Collectors.toList())
         ));
     }
 
-    public static DescribeConfigsRequest parse(ByteBuffer buffer, short version) {
-        return new DescribeConfigsRequest(ApiKeys.DESCRIBE_CONFIGS.parseRequest(version, buffer), version);
+    public static DescribeConfigsRequest parse(Readable readable, short version) {
+        return new DescribeConfigsRequest(new DescribeConfigsRequestData(readable, version), version);
     }
 }

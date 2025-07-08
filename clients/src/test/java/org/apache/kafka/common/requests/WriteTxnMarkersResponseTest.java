@@ -18,43 +18,45 @@ package org.apache.kafka.common.requests;
 
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.protocol.Errors;
-import org.junit.Before;
-import org.junit.Test;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class WriteTxnMarkersResponseTest {
 
-    private static long producerIdOne = 1L;
-    private static long producerIdTwo = 2L;
+    private static final long PRODUCER_ID_ONE = 1L;
+    private static final long PRODUCER_ID_TWO = 2L;
 
-    private static TopicPartition tp1 = new TopicPartition("topic", 1);
-    private static TopicPartition tp2 = new TopicPartition("topic", 2);
+    private static final TopicPartition TP_1 = new TopicPartition("topic", 1);
+    private static final TopicPartition TP_2 = new TopicPartition("topic", 2);
 
-    private static Errors pidOneError = Errors.UNKNOWN_PRODUCER_ID;
-    private static Errors pidTwoError = Errors.INVALID_PRODUCER_EPOCH;
+    private static final Errors PID_ONE_ERROR = Errors.UNKNOWN_PRODUCER_ID;
+    private static final Errors PID_TWO_ERROR = Errors.INVALID_PRODUCER_EPOCH;
 
     private static Map<Long, Map<TopicPartition, Errors>> errorMap;
 
-    @Before
+    @BeforeEach
     public void setUp() {
         errorMap = new HashMap<>();
-        errorMap.put(producerIdOne, Collections.singletonMap(tp1, pidOneError));
-        errorMap.put(producerIdTwo, Collections.singletonMap(tp2, pidTwoError));
+        errorMap.put(PRODUCER_ID_ONE, Collections.singletonMap(TP_1, PID_ONE_ERROR));
+        errorMap.put(PRODUCER_ID_TWO, Collections.singletonMap(TP_2, PID_TWO_ERROR));
     }
-    @Test
-    public void testConstructorWithStruct() {
 
-        Map<Errors, Integer> expectedErrorCounts = new HashMap<>();
+    @Test
+    public void testConstructor() {
+        Map<Errors, Integer> expectedErrorCounts = new EnumMap<>(Errors.class);
         expectedErrorCounts.put(Errors.UNKNOWN_PRODUCER_ID, 1);
         expectedErrorCounts.put(Errors.INVALID_PRODUCER_EPOCH, 1);
         WriteTxnMarkersResponse response = new WriteTxnMarkersResponse(errorMap);
         assertEquals(expectedErrorCounts, response.errorCounts());
-        assertEquals(Collections.singletonMap(tp1, pidOneError), response.errors(producerIdOne));
-        assertEquals(Collections.singletonMap(tp2, pidTwoError), response.errors(producerIdTwo));
+        assertEquals(Collections.singletonMap(TP_1, PID_ONE_ERROR), response.errorsByProducerId().get(PRODUCER_ID_ONE));
+        assertEquals(Collections.singletonMap(TP_2, PID_TWO_ERROR), response.errorsByProducerId().get(PRODUCER_ID_TWO));
     }
 }

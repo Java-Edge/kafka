@@ -18,16 +18,26 @@
 package org.apache.kafka.connect.util;
 
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.runtime.ConnectMetrics;
+import org.apache.kafka.connect.runtime.MockConnectMetrics;
 import org.apache.kafka.connect.runtime.SourceConnectorConfig;
+import org.apache.kafka.connect.runtime.TransformationStage;
 import org.apache.kafka.connect.runtime.WorkerConfig;
 import org.apache.kafka.connect.runtime.distributed.DistributedConfig;
+import org.apache.kafka.connect.source.SourceRecord;
 import org.apache.kafka.connect.storage.StringConverter;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.kafka.connect.transforms.Cast;
+import org.apache.kafka.connect.transforms.RegexRouter;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static org.apache.kafka.common.config.TopicConfig.CLEANUP_POLICY_COMPACT;
@@ -53,14 +63,10 @@ import static org.apache.kafka.connect.runtime.distributed.DistributedConfig.CON
 import static org.apache.kafka.connect.runtime.distributed.DistributedConfig.GROUP_ID_CONFIG;
 import static org.apache.kafka.connect.runtime.distributed.DistributedConfig.OFFSET_STORAGE_TOPIC_CONFIG;
 import static org.apache.kafka.connect.runtime.distributed.DistributedConfig.STATUS_STORAGE_TOPIC_CONFIG;
-import static org.hamcrest.CoreMatchers.hasItem;
-import static org.hamcrest.CoreMatchers.hasItems;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TopicCreationTest {
 
@@ -75,13 +81,15 @@ public class TopicCreationTest {
 
     private static final short DEFAULT_REPLICATION_FACTOR = -1;
     private static final int DEFAULT_PARTITIONS = -1;
+    private static final ConnectMetrics METRICS = new MockConnectMetrics();
+    private static final ConnectorTaskId CONNECTOR_TASK_ID = new ConnectorTaskId("test", 0);
 
     Map<String, String> workerProps;
     WorkerConfig workerConfig;
     Map<String, String> sourceProps;
     SourceConnectorConfig sourceConfig;
 
-    @Before
+    @BeforeEach
     public void setup() {
         workerProps = defaultWorkerProps();
         workerConfig = new DistributedConfig(workerProps);
@@ -125,9 +133,9 @@ public class TopicCreationTest {
 
         assertTrue(topicCreation.isTopicCreationEnabled());
         assertTrue(topicCreation.isTopicCreationRequired(FOO_TOPIC));
-        assertThat(topicCreation.defaultTopicGroup(), is(groups.get(DEFAULT_TOPIC_CREATION_GROUP)));
+        assertEquals(topicCreation.defaultTopicGroup(), groups.get(DEFAULT_TOPIC_CREATION_GROUP));
         assertEquals(2, topicCreation.topicGroups().size());
-        assertThat(topicCreation.topicGroups().keySet(), hasItems(FOO_GROUP, BAR_GROUP));
+        assertEquals(Set.of(FOO_GROUP, BAR_GROUP), topicCreation.topicGroups().keySet());
         assertEquals(topicCreation.defaultTopicGroup(), topicCreation.findFirstGroup(FOO_TOPIC));
         topicCreation.addTopic(FOO_TOPIC);
         assertFalse(topicCreation.isTopicCreationRequired(FOO_TOPIC));
@@ -146,7 +154,7 @@ public class TopicCreationTest {
         assertFalse(topicCreation.isTopicCreationEnabled());
         assertFalse(topicCreation.isTopicCreationRequired(FOO_TOPIC));
         assertNull(topicCreation.defaultTopicGroup());
-        assertThat(topicCreation.topicGroups(), is(Collections.emptyMap()));
+        assertEquals(Collections.emptyMap(), topicCreation.topicGroups());
         assertNull(topicCreation.findFirstGroup(FOO_TOPIC));
         topicCreation.addTopic(FOO_TOPIC);
         assertFalse(topicCreation.isTopicCreationRequired(FOO_TOPIC));
@@ -161,7 +169,7 @@ public class TopicCreationTest {
         assertFalse(topicCreation.isTopicCreationRequired(FOO_TOPIC));
         assertNull(topicCreation.defaultTopicGroup());
         assertEquals(0, topicCreation.topicGroups().size());
-        assertThat(topicCreation.topicGroups(), is(Collections.emptyMap()));
+        assertEquals(Collections.emptyMap(), topicCreation.topicGroups());
         assertNull(topicCreation.findFirstGroup(FOO_TOPIC));
         topicCreation.addTopic(FOO_TOPIC);
         assertFalse(topicCreation.isTopicCreationRequired(FOO_TOPIC));
@@ -179,14 +187,14 @@ public class TopicCreationTest {
         assertTrue(sourceConfig.usesTopicCreation());
         assertEquals(DEFAULT_REPLICATION_FACTOR, (short) sourceConfig.topicCreationReplicationFactor(DEFAULT_TOPIC_CREATION_GROUP));
         assertEquals(DEFAULT_PARTITIONS, (int) sourceConfig.topicCreationPartitions(DEFAULT_TOPIC_CREATION_GROUP));
-        assertThat(sourceConfig.topicCreationInclude(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.singletonList(".*")));
-        assertThat(sourceConfig.topicCreationExclude(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.emptyList()));
-        assertThat(sourceConfig.topicCreationOtherConfigs(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.emptyMap()));
+        assertEquals(Collections.singletonList(".*"), sourceConfig.topicCreationInclude(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.emptyList(), sourceConfig.topicCreationExclude(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.emptyMap(), sourceConfig.topicCreationOtherConfigs(DEFAULT_TOPIC_CREATION_GROUP));
 
         // verify topic creation group is instantiated correctly
         Map<String, TopicCreationGroup> groups = TopicCreationGroup.configuredGroups(sourceConfig);
         assertEquals(1, groups.size());
-        assertThat(groups.keySet(), hasItem(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.singleton(DEFAULT_TOPIC_CREATION_GROUP), groups.keySet());
 
         // verify topic creation
         TopicCreation topicCreation = TopicCreation.newTopicCreation(workerConfig, groups);
@@ -197,7 +205,7 @@ public class TopicCreationTest {
         assertEquals(DEFAULT_TOPIC_CREATION_GROUP, group.name());
         assertTrue(topicCreation.isTopicCreationEnabled());
         assertTrue(topicCreation.isTopicCreationRequired(FOO_TOPIC));
-        assertThat(topicCreation.topicGroups(), is(Collections.emptyMap()));
+        assertEquals(Collections.emptyMap(), topicCreation.topicGroups());
         assertEquals(topicCreation.defaultTopicGroup(), topicCreation.findFirstGroup(FOO_TOPIC));
         topicCreation.addTopic(FOO_TOPIC);
         assertFalse(topicCreation.isTopicCreationRequired(FOO_TOPIC));
@@ -207,7 +215,7 @@ public class TopicCreationTest {
         assertEquals(FOO_TOPIC, topicSpec.name());
         assertEquals(DEFAULT_REPLICATION_FACTOR, topicSpec.replicationFactor());
         assertEquals(DEFAULT_PARTITIONS, topicSpec.numPartitions());
-        assertThat(topicSpec.configs(), is(Collections.emptyMap()));
+        assertEquals(Collections.emptyMap(), topicSpec.configs());
     }
 
     @Test
@@ -233,14 +241,14 @@ public class TopicCreationTest {
         assertTrue(sourceConfig.usesTopicCreation());
         assertEquals(replicas, (short) sourceConfig.topicCreationReplicationFactor(DEFAULT_TOPIC_CREATION_GROUP));
         assertEquals(partitions, (int) sourceConfig.topicCreationPartitions(DEFAULT_TOPIC_CREATION_GROUP));
-        assertThat(sourceConfig.topicCreationInclude(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.singletonList(".*")));
-        assertThat(sourceConfig.topicCreationExclude(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.emptyList()));
-        assertThat(sourceConfig.topicCreationOtherConfigs(DEFAULT_TOPIC_CREATION_GROUP), is(topicProps));
+        assertEquals(Collections.singletonList(".*"), sourceConfig.topicCreationInclude(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.emptyList(), sourceConfig.topicCreationExclude(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(topicProps, sourceConfig.topicCreationOtherConfigs(DEFAULT_TOPIC_CREATION_GROUP));
 
         // verify topic creation group is instantiated correctly
         Map<String, TopicCreationGroup> groups = TopicCreationGroup.configuredGroups(sourceConfig);
         assertEquals(1, groups.size());
-        assertThat(groups.keySet(), hasItem(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.singleton(DEFAULT_TOPIC_CREATION_GROUP), groups.keySet());
 
         // verify topic creation
         TopicCreation topicCreation = TopicCreation.newTopicCreation(workerConfig, groups);
@@ -251,7 +259,7 @@ public class TopicCreationTest {
         assertEquals(DEFAULT_TOPIC_CREATION_GROUP, group.name());
         assertTrue(topicCreation.isTopicCreationEnabled());
         assertTrue(topicCreation.isTopicCreationRequired(FOO_TOPIC));
-        assertThat(topicCreation.topicGroups(), is(Collections.emptyMap()));
+        assertEquals(Collections.emptyMap(), topicCreation.topicGroups());
         assertEquals(topicCreation.defaultTopicGroup(), topicCreation.findFirstGroup(FOO_TOPIC));
         topicCreation.addTopic(FOO_TOPIC);
         assertFalse(topicCreation.isTopicCreationRequired(FOO_TOPIC));
@@ -261,7 +269,7 @@ public class TopicCreationTest {
         assertEquals(FOO_TOPIC, topicSpec.name());
         assertEquals(replicas, topicSpec.replicationFactor());
         assertEquals(partitions, topicSpec.numPartitions());
-        assertThat(topicSpec.configs(), is(topicProps));
+        assertEquals(topicProps, topicSpec.configs());
     }
 
     @Test
@@ -284,14 +292,14 @@ public class TopicCreationTest {
         assertTrue(sourceConfig.usesTopicCreation());
         assertEquals(DEFAULT_REPLICATION_FACTOR, (short) sourceConfig.topicCreationReplicationFactor(DEFAULT_TOPIC_CREATION_GROUP));
         assertEquals(partitions, (int) sourceConfig.topicCreationPartitions(DEFAULT_TOPIC_CREATION_GROUP));
-        assertThat(sourceConfig.topicCreationInclude(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.singletonList(".*")));
-        assertThat(sourceConfig.topicCreationExclude(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.emptyList()));
-        assertThat(sourceConfig.topicCreationOtherConfigs(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.emptyMap()));
+        assertEquals(Collections.singletonList(".*"), sourceConfig.topicCreationInclude(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.emptyList(), sourceConfig.topicCreationExclude(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.emptyMap(), sourceConfig.topicCreationOtherConfigs(DEFAULT_TOPIC_CREATION_GROUP));
 
         // verify topic creation group is instantiated correctly
         Map<String, TopicCreationGroup> groups = TopicCreationGroup.configuredGroups(sourceConfig);
         assertEquals(2, groups.size());
-        assertThat(groups.keySet(), hasItems(DEFAULT_TOPIC_CREATION_GROUP, FOO_GROUP));
+        assertEquals(Set.of(DEFAULT_TOPIC_CREATION_GROUP, FOO_GROUP), groups.keySet());
 
         // verify topic creation
         TopicCreation topicCreation = TopicCreation.newTopicCreation(workerConfig, groups);
@@ -310,7 +318,7 @@ public class TopicCreationTest {
         assertTrue(topicCreation.isTopicCreationEnabled());
         assertTrue(topicCreation.isTopicCreationRequired(FOO_TOPIC));
         assertEquals(1, topicCreation.topicGroups().size());
-        assertThat(topicCreation.topicGroups().keySet(), hasItems(FOO_GROUP));
+        assertEquals(Collections.singleton(FOO_GROUP), topicCreation.topicGroups().keySet());
         assertEquals(fooGroup, topicCreation.findFirstGroup(FOO_TOPIC));
         topicCreation.addTopic(FOO_TOPIC);
         assertFalse(topicCreation.isTopicCreationRequired(FOO_TOPIC));
@@ -320,13 +328,13 @@ public class TopicCreationTest {
         assertEquals(BAR_TOPIC, defaultTopicSpec.name());
         assertEquals(DEFAULT_REPLICATION_FACTOR, defaultTopicSpec.replicationFactor());
         assertEquals(partitions, defaultTopicSpec.numPartitions());
-        assertThat(defaultTopicSpec.configs(), is(Collections.emptyMap()));
+        assertEquals(Collections.emptyMap(), defaultTopicSpec.configs());
 
         NewTopic fooTopicSpec = topicCreation.findFirstGroup(FOO_TOPIC).newTopic(FOO_TOPIC);
         assertEquals(FOO_TOPIC, fooTopicSpec.name());
         assertEquals(fooReplicas, fooTopicSpec.replicationFactor());
         assertEquals(partitions, fooTopicSpec.numPartitions());
-        assertThat(fooTopicSpec.configs(), is(topicProps));
+        assertEquals(topicProps, fooTopicSpec.configs());
     }
 
     @Test
@@ -349,14 +357,14 @@ public class TopicCreationTest {
         assertTrue(sourceConfig.usesTopicCreation());
         assertEquals(DEFAULT_REPLICATION_FACTOR, (short) sourceConfig.topicCreationReplicationFactor(DEFAULT_TOPIC_CREATION_GROUP));
         assertEquals(partitions, (int) sourceConfig.topicCreationPartitions(DEFAULT_TOPIC_CREATION_GROUP));
-        assertThat(sourceConfig.topicCreationInclude(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.singletonList(".*")));
-        assertThat(sourceConfig.topicCreationExclude(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.emptyList()));
-        assertThat(sourceConfig.topicCreationOtherConfigs(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.emptyMap()));
+        assertEquals(Collections.singletonList(".*"), sourceConfig.topicCreationInclude(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.emptyList(), sourceConfig.topicCreationExclude(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.emptyMap(), sourceConfig.topicCreationOtherConfigs(DEFAULT_TOPIC_CREATION_GROUP));
 
         // verify topic creation group is instantiated correctly
         Map<String, TopicCreationGroup> groups = TopicCreationGroup.configuredGroups(sourceConfig);
         assertEquals(2, groups.size());
-        assertThat(groups.keySet(), hasItems(DEFAULT_TOPIC_CREATION_GROUP, FOO_GROUP));
+        assertEquals(Set.of(DEFAULT_TOPIC_CREATION_GROUP, FOO_GROUP), groups.keySet());
 
         // verify topic creation
         TopicCreation topicCreation = TopicCreation.newTopicCreation(workerConfig, groups);
@@ -376,7 +384,7 @@ public class TopicCreationTest {
         assertTrue(topicCreation.isTopicCreationRequired(FOO_TOPIC));
         assertTrue(topicCreation.isTopicCreationRequired(BAR_TOPIC));
         assertEquals(1, topicCreation.topicGroups().size());
-        assertThat(topicCreation.topicGroups().keySet(), hasItems(FOO_GROUP));
+        assertEquals(Collections.singleton(FOO_GROUP), topicCreation.topicGroups().keySet());
         assertEquals(fooGroup, topicCreation.findFirstGroup(FOO_TOPIC));
         assertEquals(fooGroup, topicCreation.findFirstGroup(BAR_TOPIC));
         topicCreation.addTopic(FOO_TOPIC);
@@ -389,13 +397,13 @@ public class TopicCreationTest {
         assertEquals(FOO_TOPIC, fooTopicSpec.name());
         assertEquals(fooReplicas, fooTopicSpec.replicationFactor());
         assertEquals(partitions, fooTopicSpec.numPartitions());
-        assertThat(fooTopicSpec.configs(), is(topicProps));
+        assertEquals(topicProps, fooTopicSpec.configs());
 
         NewTopic barTopicSpec = topicCreation.findFirstGroup(BAR_TOPIC).newTopic(BAR_TOPIC);
         assertEquals(BAR_TOPIC, barTopicSpec.name());
         assertEquals(fooReplicas, barTopicSpec.replicationFactor());
         assertEquals(partitions, barTopicSpec.numPartitions());
-        assertThat(barTopicSpec.configs(), is(topicProps));
+        assertEquals(topicProps, barTopicSpec.configs());
     }
 
     @Test
@@ -426,14 +434,14 @@ public class TopicCreationTest {
         assertTrue(sourceConfig.usesTopicCreation());
         assertEquals(DEFAULT_REPLICATION_FACTOR, (short) sourceConfig.topicCreationReplicationFactor(DEFAULT_TOPIC_CREATION_GROUP));
         assertEquals(partitions, (int) sourceConfig.topicCreationPartitions(DEFAULT_TOPIC_CREATION_GROUP));
-        assertThat(sourceConfig.topicCreationInclude(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.singletonList(".*")));
-        assertThat(sourceConfig.topicCreationExclude(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.emptyList()));
-        assertThat(sourceConfig.topicCreationOtherConfigs(DEFAULT_TOPIC_CREATION_GROUP), is(Collections.emptyMap()));
+        assertEquals(Collections.singletonList(".*"), sourceConfig.topicCreationInclude(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.emptyList(), sourceConfig.topicCreationExclude(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.emptyMap(), sourceConfig.topicCreationOtherConfigs(DEFAULT_TOPIC_CREATION_GROUP));
 
         // verify topic creation group is instantiated correctly
         Map<String, TopicCreationGroup> groups = TopicCreationGroup.configuredGroups(sourceConfig);
         assertEquals(3, groups.size());
-        assertThat(groups.keySet(), hasItems(DEFAULT_TOPIC_CREATION_GROUP, FOO_GROUP, BAR_GROUP));
+        assertEquals(Set.of(DEFAULT_TOPIC_CREATION_GROUP, FOO_GROUP, BAR_GROUP), groups.keySet());
 
         // verify topic creation
         TopicCreation topicCreation = TopicCreation.newTopicCreation(workerConfig, groups);
@@ -457,7 +465,7 @@ public class TopicCreationTest {
         assertTrue(topicCreation.isTopicCreationRequired(FOO_TOPIC));
         assertTrue(topicCreation.isTopicCreationRequired(BAR_TOPIC));
         assertEquals(2, topicCreation.topicGroups().size());
-        assertThat(topicCreation.topicGroups().keySet(), hasItems(FOO_GROUP, BAR_GROUP));
+        assertEquals(Set.of(FOO_GROUP, BAR_GROUP), topicCreation.topicGroups().keySet());
         assertEquals(fooGroup, topicCreation.findFirstGroup(FOO_TOPIC));
         assertEquals(barGroup, topicCreation.findFirstGroup(BAR_TOPIC));
         topicCreation.addTopic(FOO_TOPIC);
@@ -471,18 +479,162 @@ public class TopicCreationTest {
         assertEquals(otherTopic, defaultTopicSpec.name());
         assertEquals(DEFAULT_REPLICATION_FACTOR, defaultTopicSpec.replicationFactor());
         assertEquals(partitions, defaultTopicSpec.numPartitions());
-        assertThat(defaultTopicSpec.configs(), is(Collections.emptyMap()));
+        assertEquals(Collections.emptyMap(), defaultTopicSpec.configs());
 
         NewTopic fooTopicSpec = topicCreation.findFirstGroup(FOO_TOPIC).newTopic(FOO_TOPIC);
         assertEquals(FOO_TOPIC, fooTopicSpec.name());
         assertEquals(fooReplicas, fooTopicSpec.replicationFactor());
         assertEquals(partitions, fooTopicSpec.numPartitions());
-        assertThat(fooTopicSpec.configs(), is(fooTopicProps));
+        assertEquals(fooTopicProps, fooTopicSpec.configs());
 
         NewTopic barTopicSpec = topicCreation.findFirstGroup(BAR_TOPIC).newTopic(BAR_TOPIC);
         assertEquals(BAR_TOPIC, barTopicSpec.name());
         assertEquals(DEFAULT_REPLICATION_FACTOR, barTopicSpec.replicationFactor());
         assertEquals(barPartitions, barTopicSpec.numPartitions());
-        assertThat(barTopicSpec.configs(), is(barTopicProps));
+        assertEquals(barTopicProps, barTopicSpec.configs());
+    }
+
+    @Test
+    public void testTopicCreationWithSingleTransformation() {
+        sourceProps = defaultConnectorPropsWithTopicCreation();
+        sourceProps.put(TOPIC_CREATION_GROUPS_CONFIG, String.join(",", FOO_GROUP, BAR_GROUP));
+        String xformName = "example";
+        String castType = "int8";
+        sourceProps.put("transforms", xformName);
+        sourceProps.put("transforms." + xformName + ".type", Cast.Value.class.getName());
+        sourceProps.put("transforms." + xformName + ".spec", castType);
+
+        sourceConfig = new SourceConnectorConfig(MOCK_PLUGINS, sourceProps, true);
+
+        Map<String, TopicCreationGroup> groups = TopicCreationGroup.configuredGroups(sourceConfig);
+        TopicCreation topicCreation = TopicCreation.newTopicCreation(workerConfig, groups);
+
+        assertTrue(topicCreation.isTopicCreationEnabled());
+        assertTrue(topicCreation.isTopicCreationRequired(FOO_TOPIC));
+        assertEquals(groups.get(DEFAULT_TOPIC_CREATION_GROUP), topicCreation.defaultTopicGroup());
+        assertEquals(2, topicCreation.topicGroups().size());
+        assertEquals(Set.of(FOO_GROUP, BAR_GROUP), topicCreation.topicGroups().keySet());
+        assertEquals(topicCreation.defaultTopicGroup(), topicCreation.findFirstGroup(FOO_TOPIC));
+        topicCreation.addTopic(FOO_TOPIC);
+        assertFalse(topicCreation.isTopicCreationRequired(FOO_TOPIC));
+
+        List<TransformationStage<SourceRecord>> transformationStages = sourceConfig.transformationStages(MOCK_PLUGINS, CONNECTOR_TASK_ID, METRICS);
+        assertEquals(1, transformationStages.size());
+        TransformationStage<SourceRecord> xform = transformationStages.get(0);
+        SourceRecord transformed = xform.apply(new SourceRecord(null, null, "topic", 0, null, null, Schema.INT8_SCHEMA, 42));
+        assertEquals(Schema.Type.INT8, transformed.valueSchema().type());
+        assertEquals((byte) 42, transformed.value());
+    }
+
+    @Test
+    public void topicCreationWithTwoGroupsAndTwoTransformations() {
+        short fooReplicas = 3;
+        int partitions = 5;
+        int barPartitions = 1;
+
+        sourceProps = defaultConnectorPropsWithTopicCreation();
+        sourceProps.put(TOPIC_CREATION_GROUPS_CONFIG, String.join(",", FOO_GROUP, BAR_GROUP));
+        sourceProps.put(DEFAULT_TOPIC_CREATION_PREFIX + PARTITIONS_CONFIG, String.valueOf(partitions));
+        // Setting here but they should be ignored for the default group
+        sourceProps.put(TOPIC_CREATION_PREFIX + FOO_GROUP + "." + INCLUDE_REGEX_CONFIG, FOO_TOPIC);
+        sourceProps.put(TOPIC_CREATION_PREFIX + FOO_GROUP + "." + REPLICATION_FACTOR_CONFIG, String.valueOf(fooReplicas));
+        sourceProps.put(TOPIC_CREATION_PREFIX + BAR_GROUP + "." + INCLUDE_REGEX_CONFIG, BAR_REGEX);
+        sourceProps.put(TOPIC_CREATION_PREFIX + BAR_GROUP + "." + PARTITIONS_CONFIG, String.valueOf(barPartitions));
+
+        String castName = "cast";
+        String castType = "int8";
+        sourceProps.put("transforms." + castName + ".type", Cast.Value.class.getName());
+        sourceProps.put("transforms." + castName + ".spec", castType);
+
+        String regexRouterName = "regex";
+        sourceProps.put("transforms." + regexRouterName + ".type", RegexRouter.class.getName());
+        sourceProps.put("transforms." + regexRouterName + ".regex", "(.*)");
+        sourceProps.put("transforms." + regexRouterName + ".replacement", "prefix-$1");
+
+        sourceProps.put("transforms", String.join(",", castName, regexRouterName));
+
+        Map<String, String> fooTopicProps = new HashMap<>();
+        fooTopicProps.put(RETENTION_MS_CONFIG, String.valueOf(TimeUnit.DAYS.toMillis(30)));
+        fooTopicProps.forEach((k, v) -> sourceProps.put(TOPIC_CREATION_PREFIX + FOO_GROUP + "." + k, v));
+
+        Map<String, String> barTopicProps = new HashMap<>();
+        barTopicProps.put(CLEANUP_POLICY_CONFIG, CLEANUP_POLICY_COMPACT);
+        barTopicProps.forEach((k, v) -> sourceProps.put(TOPIC_CREATION_PREFIX + BAR_GROUP + "." + k, v));
+
+        // verify config creation
+        sourceConfig = new SourceConnectorConfig(MOCK_PLUGINS, sourceProps, true);
+        assertTrue(sourceConfig.usesTopicCreation());
+        assertEquals(DEFAULT_REPLICATION_FACTOR, (short) sourceConfig.topicCreationReplicationFactor(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(partitions, (int) sourceConfig.topicCreationPartitions(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.singletonList(".*"), sourceConfig.topicCreationInclude(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.emptyList(), sourceConfig.topicCreationExclude(DEFAULT_TOPIC_CREATION_GROUP));
+        assertEquals(Collections.emptyMap(), sourceConfig.topicCreationOtherConfigs(DEFAULT_TOPIC_CREATION_GROUP));
+
+        // verify topic creation group is instantiated correctly
+        Map<String, TopicCreationGroup> groups = TopicCreationGroup.configuredGroups(sourceConfig);
+        assertEquals(3, groups.size());
+        assertEquals(Set.of(DEFAULT_TOPIC_CREATION_GROUP, FOO_GROUP, BAR_GROUP), groups.keySet());
+
+        // verify topic creation
+        TopicCreation topicCreation = TopicCreation.newTopicCreation(workerConfig, groups);
+        TopicCreationGroup defaultGroup = topicCreation.defaultTopicGroup();
+        // Default group will match all topics besides empty string
+        assertTrue(defaultGroup.matches(" "));
+        assertTrue(defaultGroup.matches(FOO_TOPIC));
+        assertTrue(defaultGroup.matches(BAR_TOPIC));
+        assertEquals(DEFAULT_TOPIC_CREATION_GROUP, defaultGroup.name());
+        TopicCreationGroup fooGroup = groups.get(FOO_GROUP);
+        assertFalse(fooGroup.matches(" "));
+        assertTrue(fooGroup.matches(FOO_TOPIC));
+        assertFalse(fooGroup.matches(BAR_TOPIC));
+        assertEquals(FOO_GROUP, fooGroup.name());
+        TopicCreationGroup barGroup = groups.get(BAR_GROUP);
+        assertTrue(barGroup.matches(BAR_TOPIC));
+        assertFalse(barGroup.matches(FOO_TOPIC));
+        assertEquals(BAR_GROUP, barGroup.name());
+
+        assertTrue(topicCreation.isTopicCreationEnabled());
+        assertTrue(topicCreation.isTopicCreationRequired(FOO_TOPIC));
+        assertTrue(topicCreation.isTopicCreationRequired(BAR_TOPIC));
+        assertEquals(2, topicCreation.topicGroups().size());
+        assertEquals(Set.of(FOO_GROUP, BAR_GROUP), topicCreation.topicGroups().keySet());
+        assertEquals(fooGroup, topicCreation.findFirstGroup(FOO_TOPIC));
+        assertEquals(barGroup, topicCreation.findFirstGroup(BAR_TOPIC));
+        topicCreation.addTopic(FOO_TOPIC);
+        topicCreation.addTopic(BAR_TOPIC);
+        assertFalse(topicCreation.isTopicCreationRequired(FOO_TOPIC));
+        assertFalse(topicCreation.isTopicCreationRequired(BAR_TOPIC));
+
+        // verify new topic properties
+        String otherTopic = "any-other-topic";
+        NewTopic defaultTopicSpec = topicCreation.findFirstGroup(otherTopic).newTopic(otherTopic);
+        assertEquals(otherTopic, defaultTopicSpec.name());
+        assertEquals(DEFAULT_REPLICATION_FACTOR, defaultTopicSpec.replicationFactor());
+        assertEquals(partitions, defaultTopicSpec.numPartitions());
+        assertEquals(Collections.emptyMap(), defaultTopicSpec.configs());
+
+        NewTopic fooTopicSpec = topicCreation.findFirstGroup(FOO_TOPIC).newTopic(FOO_TOPIC);
+        assertEquals(FOO_TOPIC, fooTopicSpec.name());
+        assertEquals(fooReplicas, fooTopicSpec.replicationFactor());
+        assertEquals(partitions, fooTopicSpec.numPartitions());
+        assertEquals(fooTopicProps, fooTopicSpec.configs());
+
+        NewTopic barTopicSpec = topicCreation.findFirstGroup(BAR_TOPIC).newTopic(BAR_TOPIC);
+        assertEquals(BAR_TOPIC, barTopicSpec.name());
+        assertEquals(DEFAULT_REPLICATION_FACTOR, barTopicSpec.replicationFactor());
+        assertEquals(barPartitions, barTopicSpec.numPartitions());
+        assertEquals(barTopicProps, barTopicSpec.configs());
+
+        List<TransformationStage<SourceRecord>> transformationStages = sourceConfig.transformationStages(MOCK_PLUGINS, CONNECTOR_TASK_ID, METRICS);
+        assertEquals(2, transformationStages.size());
+
+        TransformationStage<SourceRecord> castXForm = transformationStages.get(0);
+        SourceRecord transformed = castXForm.apply(new SourceRecord(null, null, "topic", 0, null, null, Schema.INT8_SCHEMA, 42));
+        assertEquals(Schema.Type.INT8, transformed.valueSchema().type());
+        assertEquals((byte) 42, transformed.value());
+
+        TransformationStage<SourceRecord> regexRouterXForm = transformationStages.get(1);
+        transformed = regexRouterXForm.apply(new SourceRecord(null, null, "topic", 0, null, null, Schema.INT8_SCHEMA, 42));
+        assertEquals("prefix-topic", transformed.topic());
     }
 }

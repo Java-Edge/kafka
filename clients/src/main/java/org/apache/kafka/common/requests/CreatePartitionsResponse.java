@@ -20,45 +20,36 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.message.CreatePartitionsResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
-import java.util.HashMap;
+import java.util.EnumMap;
 import java.util.Map;
-
 
 public class CreatePartitionsResponse extends AbstractResponse {
 
     private final CreatePartitionsResponseData data;
 
     public CreatePartitionsResponse(CreatePartitionsResponseData data) {
+        super(ApiKeys.CREATE_PARTITIONS);
         this.data = data;
     }
 
-    public CreatePartitionsResponse(Struct struct, short version) {
-        this.data = new CreatePartitionsResponseData(struct, version);
-    }
-
+    @Override
     public CreatePartitionsResponseData data() {
         return data;
     }
 
     @Override
-    protected Struct toStruct(short version) {
-        return data.toStruct(version);
-    }
-
-    @Override
     public Map<Errors, Integer> errorCounts() {
-        Map<Errors, Integer> counts = new HashMap<>();
+        Map<Errors, Integer> counts = new EnumMap<>(Errors.class);
         data.results().forEach(result ->
             updateErrorCounts(counts, Errors.forCode(result.errorCode()))
         );
         return counts;
     }
 
-    public static CreatePartitionsResponse parse(ByteBuffer buffer, short version) {
-        return new CreatePartitionsResponse(ApiKeys.CREATE_PARTITIONS.parseResponse(version, buffer), version);
+    public static CreatePartitionsResponse parse(Readable readable, short version) {
+        return new CreatePartitionsResponse(new CreatePartitionsResponseData(readable, version));
     }
 
     @Override
@@ -69,5 +60,10 @@ public class CreatePartitionsResponse extends AbstractResponse {
     @Override
     public int throttleTimeMs() {
         return data.throttleTimeMs();
+    }
+
+    @Override
+    public void maybeSetThrottleTimeMs(int throttleTimeMs) {
+        data.setThrottleTimeMs(throttleTimeMs);
     }
 }

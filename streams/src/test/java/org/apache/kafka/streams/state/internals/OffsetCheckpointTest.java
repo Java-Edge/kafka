@@ -16,6 +16,11 @@
  */
 package org.apache.kafka.streams.state.internals;
 
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.test.TestUtils;
+
+import org.junit.jupiter.api.Test;
+
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -26,18 +31,16 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.test.TestUtils;
-import org.junit.Test;
-
 import static org.apache.kafka.streams.state.internals.OffsetCheckpoint.writeEntry;
 import static org.apache.kafka.streams.state.internals.OffsetCheckpoint.writeIntLine;
+import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.assertTrue;
+import static org.hamcrest.Matchers.is;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class OffsetCheckpointTest {
 
@@ -74,14 +77,32 @@ public class OffsetCheckpointTest {
         final File f = new File(TestUtils.tempDirectory().getAbsolutePath(), "kafka.tmp");
         final OffsetCheckpoint checkpoint = new OffsetCheckpoint(f);
 
-        checkpoint.write(Collections.<TopicPartition, Long>emptyMap());
+        checkpoint.write(Collections.emptyMap());
 
         assertFalse(f.exists());
 
-        assertEquals(Collections.<TopicPartition, Long>emptyMap(), checkpoint.read());
+        assertEquals(Collections.emptyMap(), checkpoint.read());
 
         // deleting a non-exist checkpoint file should be fine
         checkpoint.delete();
+    }
+
+    @Test
+    public void shouldDeleteExistingCheckpointWhenNoOffsets() throws IOException {
+        final File file = TestUtils.tempFile();
+        final OffsetCheckpoint checkpoint = new OffsetCheckpoint(file);
+
+        final Map<TopicPartition, Long> offsets = Collections.singletonMap(new TopicPartition(topic, 0), 1L);
+
+        checkpoint.write(offsets);
+
+        assertThat(file.exists(), is(true));
+        assertThat(offsets, is(checkpoint.read()));
+
+        checkpoint.write(Collections.emptyMap());
+
+        assertThat(file.exists(), is(false));
+        assertThat(Collections.emptyMap(), is(checkpoint.read()));
     }
 
     @Test
@@ -133,6 +154,17 @@ public class OffsetCheckpointTest {
         } finally {
             checkpoint.delete();
         }
+    }
+
+    @Test
+    public void shouldThrowIOExceptionWhenWritingToNotExistedFile() {
+        final Map<TopicPartition, Long> offsetsToWrite = Collections.singletonMap(new TopicPartition(topic, 0), 0L);
+
+        final File notExistedFile = new File("/not_existed_dir/not_existed_file");
+        final OffsetCheckpoint checkpoint = new OffsetCheckpoint(notExistedFile);
+        
+        final IOException e = assertThrows(IOException.class, () -> checkpoint.write(offsetsToWrite));
+        assertThat(e.getMessage(), containsString("No such file or directory"));
     }
 
     /**

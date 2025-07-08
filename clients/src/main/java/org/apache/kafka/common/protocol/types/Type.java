@@ -16,6 +16,7 @@
  */
 package org.apache.kafka.common.protocol.types;
 
+import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.record.BaseRecords;
 import org.apache.kafka.common.record.MemoryRecords;
 import org.apache.kafka.common.utils.ByteUtils;
@@ -23,7 +24,6 @@ import org.apache.kafka.common.utils.Utils;
 
 import java.nio.ByteBuffer;
 import java.util.Optional;
-import java.util.UUID;
 
 /**
  * A serializable type
@@ -39,6 +39,7 @@ public abstract class Type {
 
     /**
      * Read the typed object from the buffer
+     * Please remember to do size validation before creating the container (ex: array) for the following data
      *
      * @throws SchemaException If the object is not valid for its type
      */
@@ -81,7 +82,7 @@ public abstract class Type {
     /**
      * A Type that can return its description for documentation purposes.
      */
-    public static abstract class DocumentedType extends Type {
+    public abstract static class DocumentedType extends Type {
 
         /**
          * Short name of the type to identify it in documentation;
@@ -220,6 +221,44 @@ public abstract class Type {
         }
     };
 
+    public static final DocumentedType UINT16 = new DocumentedType() {
+        @Override
+        public void write(ByteBuffer buffer, Object o) {
+            Integer value = (Integer) o;
+            buffer.putShort((short) value.intValue());
+        }
+
+        @Override
+        public Object read(ByteBuffer buffer) {
+            short value = buffer.getShort();
+            return Short.toUnsignedInt(value);
+        }
+
+        @Override
+        public int sizeOf(Object o) {
+            return 2;
+        }
+
+        @Override
+        public String typeName() {
+            return "UINT16";
+        }
+
+        @Override
+        public Integer validate(Object item) {
+            if (item instanceof Integer)
+                return (Integer) item;
+            else
+                throw new SchemaException(item + " is not an a Integer (encoding an unsigned short)");
+        }
+
+        @Override
+        public String documentation() {
+            return "Represents an integer between 0 and 65535 inclusive. " +
+                    "The values are encoded using two bytes in network byte order (big-endian).";
+        }
+    };
+
     public static final DocumentedType INT32 = new DocumentedType() {
         @Override
         public void write(ByteBuffer buffer, Object o) {
@@ -282,7 +321,7 @@ public abstract class Type {
             if (item instanceof Long)
                 return (Long) item;
             else
-                throw new SchemaException(item + " is not a Long.");
+                throw new SchemaException(item + " is not an a Long (encoding an unsigned integer).");
         }
 
         @Override
@@ -331,14 +370,14 @@ public abstract class Type {
     public static final DocumentedType UUID = new DocumentedType() {
         @Override
         public void write(ByteBuffer buffer, Object o) {
-            final java.util.UUID uuid = (java.util.UUID) o;
+            final Uuid uuid = (Uuid) o;
             buffer.putLong(uuid.getMostSignificantBits());
             buffer.putLong(uuid.getLeastSignificantBits());
         }
 
         @Override
         public Object read(ByteBuffer buffer) {
-            return new java.util.UUID(buffer.getLong(), buffer.getLong());
+            return new Uuid(buffer.getLong(), buffer.getLong());
         }
 
         @Override
@@ -352,16 +391,16 @@ public abstract class Type {
         }
 
         @Override
-        public UUID validate(Object item) {
-            if (item instanceof UUID)
-                return (UUID) item;
+        public Uuid validate(Object item) {
+            if (item instanceof Uuid)
+                return (Uuid) item;
             else
-                throw new SchemaException(item + " is not a UUID.");
+                throw new SchemaException(item + " is not a Uuid.");
         }
 
         @Override
         public String documentation() {
-            return "Represents a java.util.UUID. " +
+            return "Represents a type 4 immutable universally unique identifier (Uuid). " +
                     "The values are encoded using sixteen bytes in network byte order (big-endian).";
         }
     };
@@ -650,9 +689,12 @@ public abstract class Type {
             if (size > buffer.remaining())
                 throw new SchemaException("Error reading bytes of size " + size + ", only " + buffer.remaining() + " bytes available");
 
+            int limit = buffer.limit();
+            int newPosition = buffer.position() + size;
+            buffer.limit(newPosition);
             ByteBuffer val = buffer.slice();
-            val.limit(size);
-            buffer.position(buffer.position() + size);
+            buffer.limit(limit);
+            buffer.position(newPosition);
             return val;
         }
 
@@ -700,9 +742,12 @@ public abstract class Type {
             if (size > buffer.remaining())
                 throw new SchemaException("Error reading bytes of size " + size + ", only " + buffer.remaining() + " bytes available");
 
+            int limit = buffer.limit();
+            int newPosition = buffer.position() + size;
+            buffer.limit(newPosition);
             ByteBuffer val = buffer.slice();
-            val.limit(size);
-            buffer.position(buffer.position() + size);
+            buffer.limit(limit);
+            buffer.position(newPosition);
             return val;
         }
 
@@ -761,9 +806,12 @@ public abstract class Type {
             if (size > buffer.remaining())
                 throw new SchemaException("Error reading bytes of size " + size + ", only " + buffer.remaining() + " bytes available");
 
+            int limit = buffer.limit();
+            int newPosition = buffer.position() + size;
+            buffer.limit(newPosition);
             ByteBuffer val = buffer.slice();
-            val.limit(size);
-            buffer.position(buffer.position() + size);
+            buffer.limit(limit);
+            buffer.position(newPosition);
             return val;
         }
 
@@ -826,9 +874,12 @@ public abstract class Type {
             if (size > buffer.remaining())
                 throw new SchemaException("Error reading bytes of size " + size + ", only " + buffer.remaining() + " bytes available");
 
+            int limit = buffer.limit();
+            int newPosition = buffer.position() + size;
+            buffer.limit(newPosition);
             ByteBuffer val = buffer.slice();
-            val.limit(size);
-            buffer.position(buffer.position() + size);
+            buffer.limit(limit);
+            buffer.position(newPosition);
             return val;
         }
 
@@ -1020,7 +1071,7 @@ public abstract class Type {
         public String documentation() {
             return "Represents an integer between -2<sup>31</sup> and 2<sup>31</sup>-1 inclusive. " +
                     "Encoding follows the variable-length zig-zag encoding from " +
-                    " <a href=\"http://code.google.com/apis/protocolbuffers/docs/encoding.html\"> Google Protocol Buffers</a>.";
+                    " <a href=\"https://code.google.com/apis/protocolbuffers/docs/encoding.html\"> Google Protocol Buffers</a>.";
         }
     };
 
@@ -1055,17 +1106,17 @@ public abstract class Type {
         public String documentation() {
             return "Represents an integer between -2<sup>63</sup> and 2<sup>63</sup>-1 inclusive. " +
                     "Encoding follows the variable-length zig-zag encoding from " +
-                    " <a href=\"http://code.google.com/apis/protocolbuffers/docs/encoding.html\"> Google Protocol Buffers</a>.";
+                    " <a href=\"https://code.google.com/apis/protocolbuffers/docs/encoding.html\"> Google Protocol Buffers</a>.";
         }
     };
 
     private static String toHtml() {
         DocumentedType[] types = {
             BOOLEAN, INT8, INT16, INT32, INT64,
-            UNSIGNED_INT32, VARINT, VARLONG, UUID, FLOAT64,
+            UINT16, UNSIGNED_INT32, VARINT, VARLONG, UUID, FLOAT64,
             STRING, COMPACT_STRING, NULLABLE_STRING, COMPACT_NULLABLE_STRING,
             BYTES, COMPACT_BYTES, NULLABLE_BYTES, COMPACT_NULLABLE_BYTES,
-            RECORDS, new ArrayOf(STRING), new CompactArrayOf(COMPACT_STRING)};
+            RECORDS, COMPACT_RECORDS, new ArrayOf(STRING), new CompactArrayOf(COMPACT_STRING)};
         final StringBuilder b = new StringBuilder();
         b.append("<table class=\"data-table\"><tbody>\n");
         b.append("<tr>");
@@ -1082,7 +1133,7 @@ public abstract class Type {
             b.append("</td>");
             b.append("</tr>\n");
         }
-        b.append("</table>\n");
+        b.append("</tbody></table>\n");
         return b.toString();
     }
 

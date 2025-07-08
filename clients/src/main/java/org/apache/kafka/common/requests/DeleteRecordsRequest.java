@@ -23,9 +23,7 @@ import org.apache.kafka.common.message.DeleteRecordsResponseData;
 import org.apache.kafka.common.message.DeleteRecordsResponseData.DeleteRecordsTopicResult;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
-
-import java.nio.ByteBuffer;
+import org.apache.kafka.common.protocol.Readable;
 
 public class DeleteRecordsRequest extends AbstractRequest {
 
@@ -34,7 +32,7 @@ public class DeleteRecordsRequest extends AbstractRequest {
     private final DeleteRecordsRequestData data;
 
     public static class Builder extends AbstractRequest.Builder<DeleteRecordsRequest> {
-        private DeleteRecordsRequestData data;
+        private final DeleteRecordsRequestData data;
 
         public Builder(DeleteRecordsRequestData data) {
             super(ApiKeys.DELETE_RECORDS);
@@ -57,16 +55,7 @@ public class DeleteRecordsRequest extends AbstractRequest {
         this.data = data;
     }
 
-    public DeleteRecordsRequest(Struct struct, short version) {
-        super(ApiKeys.DELETE_RECORDS, version);
-        this.data = new DeleteRecordsRequestData(struct, version);
-    }
-
     @Override
-    protected Struct toStruct() {
-        return data.toStruct(version());
-    }
-
     public DeleteRecordsRequestData data() {
         return data;
     }
@@ -88,7 +77,7 @@ public class DeleteRecordsRequest extends AbstractRequest {
         return new DeleteRecordsResponse(result);
     }
 
-    public static DeleteRecordsRequest parse(ByteBuffer buffer, short version) {
-        return new DeleteRecordsRequest(ApiKeys.DELETE_RECORDS.parseRequest(version, buffer), version);
+    public static DeleteRecordsRequest parse(Readable readable, short version) {
+        return new DeleteRecordsRequest(new DeleteRecordsRequestData(readable, version), version);
     }
 }

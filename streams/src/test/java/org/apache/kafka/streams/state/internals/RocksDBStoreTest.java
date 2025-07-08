@@ -16,35 +16,59 @@
  */
 package org.apache.kafka.streams.state.internals;
 
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
+import org.apache.kafka.common.header.Headers;
+import org.apache.kafka.common.header.internals.RecordHeader;
+import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.metrics.MetricConfig;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.metrics.Sensor.RecordingLevel;
+import org.apache.kafka.common.record.RecordBatch;
+import org.apache.kafka.common.record.TimestampType;
 import org.apache.kafka.common.serialization.Deserializer;
+import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.kafka.common.serialization.UUIDSerializer;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.kafka.common.utils.MockTime;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.streams.KeyValue;
 import org.apache.kafka.streams.StreamsConfig;
+import org.apache.kafka.streams.StreamsConfig.InternalConfig;
+import org.apache.kafka.streams.errors.InvalidStateStoreException;
 import org.apache.kafka.streams.errors.ProcessorStateException;
+import org.apache.kafka.streams.processor.StateStoreContext;
 import org.apache.kafka.streams.processor.TaskId;
+import org.apache.kafka.streams.processor.internals.ChangelogRecordDeserializationHelper;
+import org.apache.kafka.streams.processor.internals.ProcessorRecordContext;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
+import org.apache.kafka.streams.query.Position;
 import org.apache.kafka.streams.state.KeyValueIterator;
+import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.streams.state.RocksDBConfigSetter;
+import org.apache.kafka.streams.state.StoreBuilder;
+import org.apache.kafka.streams.state.Stores;
 import org.apache.kafka.streams.state.internals.metrics.RocksDBMetricsRecorder;
 import org.apache.kafka.test.InternalMockProcessorContext;
+import org.apache.kafka.test.MockRocksDbConfigSetter;
 import org.apache.kafka.test.StreamsTestUtils;
 import org.apache.kafka.test.TestUtils;
-import org.easymock.EasyMock;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+
+import org.hamcrest.Matchers;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 import org.rocksdb.BlockBasedTableConfig;
 import org.rocksdb.BloomFilter;
 import org.rocksdb.Cache;
@@ -56,51 +80,68 @@ import org.rocksdb.Statistics;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.easymock.EasyMock.eq;
-import static org.easymock.EasyMock.isNull;
-import static org.easymock.EasyMock.mock;
-import static org.easymock.EasyMock.notNull;
-import static org.easymock.EasyMock.reset;
+import static org.apache.kafka.common.utils.Utils.mkEntry;
+import static org.apache.kafka.common.utils.Utils.mkMap;
+import static org.apache.kafka.streams.state.internals.RocksDBStore.DB_FILE_DIR;
+import static org.hamcrest.CoreMatchers.either;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.greaterThan;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.assertTrue;
-import static org.powermock.api.easymock.PowerMock.replay;
-import static org.powermock.api.easymock.PowerMock.verify;
+import static org.hamcrest.Matchers.hasEntry;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.notNull;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
-public class RocksDBStoreTest {
+@SuppressWarnings("unchecked")
+@ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.STRICT_STUBS)
+public class RocksDBStoreTest extends AbstractKeyValueStoreTest {
     private static boolean enableBloomFilters = false;
-    final static String DB_NAME = "db-name";
-    final static String METRICS_SCOPE = "metrics-scope";
+    static final String DB_NAME = "db-name";
+    static final String METRICS_SCOPE = "metrics-scope";
 
     private File dir;
     private final Time time = new MockTime();
     private final Serializer<String> stringSerializer = new StringSerializer();
     private final Deserializer<String> stringDeserializer = new StringDeserializer();
 
-    private final RocksDBMetricsRecorder metricsRecorder = mock(RocksDBMetricsRecorder.class);
+    @Mock
+    private RocksDBMetricsRecorder metricsRecorder;
 
-    InternalMockProcessorContext context;
+    InternalMockProcessorContext<?, ?> context;
     RocksDBStore rocksDBStore;
 
-    @Before
+    @BeforeEach
     public void setUp() {
         final Properties props = StreamsTestUtils.getStreamsConfig();
         props.put(StreamsConfig.ROCKSDB_CONFIG_SETTER_CLASS_CONFIG, MockRocksDbConfigSetter.class);
         dir = TestUtils.tempDirectory();
-        context = new InternalMockProcessorContext(
+        context = new InternalMockProcessorContext<>(
             dir,
             Serdes.String(),
             Serdes.String(),
@@ -109,9 +150,21 @@ public class RocksDBStoreTest {
         rocksDBStore = getRocksDBStore();
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         rocksDBStore.close();
+    }
+
+    @Override
+    protected <K, V> KeyValueStore<K, V> createKeyValueStore(final StateStoreContext context) {
+        final StoreBuilder<KeyValueStore<K, V>> storeBuilder = Stores.keyValueStoreBuilder(
+            Stores.persistentKeyValueStore("my-store"),
+            (Serde<K>) context.keySerde(),
+            (Serde<V>) context.valueSerde());
+
+        final KeyValueStore<K, V> store = storeBuilder.build();
+        store.init(context, store);
+        return store;
     }
 
     RocksDBStore getRocksDBStore() {
@@ -119,17 +172,21 @@ public class RocksDBStoreTest {
     }
 
     private RocksDBStore getRocksDBStoreWithRocksDBMetricsRecorder() {
-        return new RocksDBStore(DB_NAME, METRICS_SCOPE, metricsRecorder);
+        return new RocksDBStore(DB_NAME, DB_FILE_DIR, metricsRecorder);
     }
 
-    private InternalMockProcessorContext getProcessorContext(final Properties streamsProps) {
-        return new InternalMockProcessorContext(
+    private RocksDBStore getRocksDBStoreWithCustomManagedIterators() {
+        return new RocksDBStore(DB_NAME, DB_FILE_DIR, metricsRecorder, false);
+    }
+
+    private InternalMockProcessorContext<?, ?> getProcessorContext(final Properties streamsProps) {
+        return new InternalMockProcessorContext<>(
             TestUtils.tempDirectory(),
             new StreamsConfig(streamsProps)
         );
     }
 
-    private InternalMockProcessorContext getProcessorContext(
+    private InternalMockProcessorContext<?, ?> getProcessorContext(
         final RecordingLevel recordingLevel,
         final Class<? extends RocksDBConfigSetter> rocksDBConfigSetterClass) {
 
@@ -139,7 +196,7 @@ public class RocksDBStoreTest {
         return getProcessorContext(streamsProps);
     }
 
-    private InternalMockProcessorContext getProcessorContext(final RecordingLevel recordingLevel) {
+    private InternalMockProcessorContext<?, ?> getProcessorContext(final RecordingLevel recordingLevel) {
         final Properties streamsProps = StreamsTestUtils.getStreamsConfig();
         streamsProps.setProperty(StreamsConfig.METRICS_RECORDING_LEVEL_CONFIG, recordingLevel.name());
         return getProcessorContext(streamsProps);
@@ -149,28 +206,20 @@ public class RocksDBStoreTest {
     public void shouldAddValueProvidersWithoutStatisticsToInjectedMetricsRecorderWhenRecordingLevelInfo() {
         rocksDBStore = getRocksDBStoreWithRocksDBMetricsRecorder();
         context = getProcessorContext(RecordingLevel.INFO);
-        reset(metricsRecorder);
-        metricsRecorder.addValueProviders(eq(DB_NAME), notNull(), notNull(), isNull());
-        replay(metricsRecorder);
 
-        rocksDBStore.openDB(context);
+        rocksDBStore.openDB(context.appConfigs(), context.stateDir());
 
-        verify(metricsRecorder);
-        reset(metricsRecorder);
+        verify(metricsRecorder).addValueProviders(eq(DB_NAME), notNull(), notNull(), isNull());
     }
 
     @Test
     public void shouldAddValueProvidersWithStatisticsToInjectedMetricsRecorderWhenRecordingLevelDebug() {
         rocksDBStore = getRocksDBStoreWithRocksDBMetricsRecorder();
         context = getProcessorContext(RecordingLevel.DEBUG);
-        reset(metricsRecorder);
-        metricsRecorder.addValueProviders(eq(DB_NAME), notNull(), notNull(), notNull());
-        replay(metricsRecorder);
 
-        rocksDBStore.openDB(context);
+        rocksDBStore.openDB(context.appConfigs(), context.stateDir());
 
-        verify(metricsRecorder);
-        reset(metricsRecorder);
+        verify(metricsRecorder).addValueProviders(eq(DB_NAME), notNull(), notNull(), notNull());
     }
 
     @Test
@@ -178,43 +227,87 @@ public class RocksDBStoreTest {
         rocksDBStore = getRocksDBStoreWithRocksDBMetricsRecorder();
         try {
             context = getProcessorContext(RecordingLevel.DEBUG);
-            rocksDBStore.openDB(context);
-            reset(metricsRecorder);
-            metricsRecorder.removeValueProviders(DB_NAME);
-            replay(metricsRecorder);
+            rocksDBStore.openDB(context.appConfigs(), context.stateDir());
         } finally {
             rocksDBStore.close();
         }
 
-        verify(metricsRecorder);
+        verify(metricsRecorder).removeValueProviders(DB_NAME);
     }
 
     public static class RocksDBConfigSetterWithUserProvidedStatistics implements RocksDBConfigSetter {
-        public RocksDBConfigSetterWithUserProvidedStatistics(){}
+        public RocksDBConfigSetterWithUserProvidedStatistics() {}
 
         public void setConfig(final String storeName, final Options options, final Map<String, Object> configs) {
-            options.setStatistics(new Statistics());
+            lastStatistics = new Statistics();
+            options.setStatistics(lastStatistics);
         }
 
         public void close(final String storeName, final Options options) {
-            options.statistics().close();
+            // We want to be in charge of closing our statistics ourselves.
+            assertTrue(lastStatistics.isOwningHandle());
+            lastStatistics.close();
+            lastStatistics = null;
         }
+
+        protected static Statistics lastStatistics = null;
     }
 
     @Test
     public void shouldNotSetStatisticsInValueProvidersWhenUserProvidesStatistics() {
         rocksDBStore = getRocksDBStoreWithRocksDBMetricsRecorder();
         context = getProcessorContext(RecordingLevel.DEBUG, RocksDBConfigSetterWithUserProvidedStatistics.class);
-        metricsRecorder.addValueProviders(eq(DB_NAME), notNull(), notNull(), isNull());
-        replay(metricsRecorder);
 
-        rocksDBStore.openDB(context);
-        verify(metricsRecorder);
-        reset(metricsRecorder);
+        rocksDBStore.openDB(context.appConfigs(), context.stateDir());
+
+        verify(metricsRecorder).addValueProviders(eq(DB_NAME), notNull(), notNull(), isNull());
     }
 
+
+    @Test
+    public void shouldCloseStatisticsWhenUserProvidesStatistics() throws Exception {
+        rocksDBStore = getRocksDBStoreWithRocksDBMetricsRecorder();
+        context = getProcessorContext(RecordingLevel.DEBUG, RocksDBConfigSetterWithUserProvidedStatistics.class);
+
+        rocksDBStore.openDB(context.appConfigs(), context.stateDir());
+        final Statistics userStatistics = RocksDBConfigSetterWithUserProvidedStatistics.lastStatistics;
+        final Statistics statisticsHandle = getStatistics(rocksDBStore);
+        rocksDBStore.close();
+
+        // Both statistics handles must be closed now.
+        assertFalse(userStatistics.isOwningHandle());
+        assertFalse(statisticsHandle.isOwningHandle());
+        assertNull(getStatistics(rocksDBStore));
+        assertNull(RocksDBConfigSetterWithUserProvidedStatistics.lastStatistics);
+    }
+
+    @Test
+    public void shouldSetStatisticsInValueProvidersWhenUserProvidesNoStatistics() throws Exception {
+        rocksDBStore = getRocksDBStoreWithRocksDBMetricsRecorder();
+        context = getProcessorContext(RecordingLevel.DEBUG);
+
+        rocksDBStore.openDB(context.appConfigs(), context.stateDir());
+
+        verify(metricsRecorder).addValueProviders(eq(DB_NAME), notNull(), notNull(), eq(getStatistics(rocksDBStore)));
+    }
+
+    @Test
+    public void shouldCloseStatisticsWhenUserProvidesNoStatistics() throws Exception {
+        rocksDBStore = getRocksDBStoreWithRocksDBMetricsRecorder();
+        context = getProcessorContext(RecordingLevel.DEBUG);
+
+        rocksDBStore.openDB(context.appConfigs(), context.stateDir());
+        final Statistics statisticsHandle = getStatistics(rocksDBStore);
+        rocksDBStore.close();
+
+        // Statistics handles must be closed now.
+        assertFalse(statisticsHandle.isOwningHandle());
+        assertNull(getStatistics(rocksDBStore));
+    }
+
+
     public static class RocksDBConfigSetterWithUserProvidedNewBlockBasedTableFormatConfig implements RocksDBConfigSetter {
-        public RocksDBConfigSetterWithUserProvidedNewBlockBasedTableFormatConfig(){}
+        public RocksDBConfigSetterWithUserProvidedNewBlockBasedTableFormatConfig() {}
 
         public void setConfig(final String storeName, final Options options, final Map<String, Object> configs) {
             options.setTableFormatConfig(new BlockBasedTableConfig());
@@ -233,17 +326,17 @@ public class RocksDBStoreTest {
             RocksDBConfigSetterWithUserProvidedNewBlockBasedTableFormatConfig.class
         );
         assertThrows(
-            "The used block-based table format configuration does not expose the " +
-                "block cache. Use the BlockBasedTableConfig instance provided by Options#tableFormatConfig() to configure " +
-                "the block-based table format of RocksDB. Do not provide a new instance of BlockBasedTableConfig to " +
-                "the RocksDB options.",
             ProcessorStateException.class,
-            () -> rocksDBStore.openDB(context)
+            () -> rocksDBStore.openDB(context.appConfigs(), context.stateDir()),
+            "The used block-based table format configuration does not expose the " +
+                    "block cache. Use the BlockBasedTableConfig instance provided by Options#tableFormatConfig() to configure " +
+                    "the block-based table format of RocksDB. Do not provide a new instance of BlockBasedTableConfig to " +
+                    "the RocksDB options."
         );
     }
 
     public static class RocksDBConfigSetterWithUserProvidedNewPlainTableFormatConfig implements RocksDBConfigSetter {
-        public RocksDBConfigSetterWithUserProvidedNewPlainTableFormatConfig(){}
+        public RocksDBConfigSetterWithUserProvidedNewPlainTableFormatConfig() {}
 
         public void setConfig(final String storeName, final Options options, final Map<String, Object> configs) {
             options.setTableFormatConfig(new PlainTableConfig());
@@ -261,12 +354,10 @@ public class RocksDBStoreTest {
             RecordingLevel.DEBUG,
             RocksDBConfigSetterWithUserProvidedNewPlainTableFormatConfig.class
         );
-        metricsRecorder.addValueProviders(eq(DB_NAME), notNull(), isNull(), notNull());
-        replay(metricsRecorder);
 
-        rocksDBStore.openDB(context);
-        verify(metricsRecorder);
-        reset(metricsRecorder);
+        rocksDBStore.openDB(context.appConfigs(), context.stateDir());
+
+        verify(metricsRecorder).addValueProviders(eq(DB_NAME), notNull(), isNull(), notNull());
     }
 
     @Test
@@ -294,19 +385,31 @@ public class RocksDBStoreTest {
     public void shouldCallRocksDbConfigSetter() {
         MockRocksDbConfigSetter.called = false;
 
+        final Properties props = StreamsTestUtils.getStreamsConfig();
+        props.put(StreamsConfig.ROCKSDB_CONFIG_SETTER_CLASS_CONFIG, MockRocksDbConfigSetter.class);
+        final Object param = new Object();
+        props.put("abc.def", param);
+        final InternalMockProcessorContext<String, String> context = new InternalMockProcessorContext<>(
+            dir,
+            Serdes.String(),
+            Serdes.String(),
+            new StreamsConfig(props)
+        );
+
         rocksDBStore.init(context, rocksDBStore);
 
         assertTrue(MockRocksDbConfigSetter.called);
+        assertThat(MockRocksDbConfigSetter.configMap.get("abc.def"), equalTo(param));
     }
 
     @Test
     public void shouldThrowProcessorStateExceptionOnOpeningReadOnlyDir() {
         final File tmpDir = TestUtils.tempDirectory();
-        final InternalMockProcessorContext tmpContext = new InternalMockProcessorContext(tmpDir, new StreamsConfig(StreamsTestUtils.getStreamsConfig()));
+        final InternalMockProcessorContext<?, ?> tmpContext = new InternalMockProcessorContext<>(tmpDir, new StreamsConfig(StreamsTestUtils.getStreamsConfig()));
 
         assertTrue(tmpDir.setReadOnly());
 
-        assertThrows(ProcessorStateException.class, () -> rocksDBStore.openDB(tmpContext));
+        assertThrows(ProcessorStateException.class, () -> rocksDBStore.openDB(tmpContext.appConfigs(), tmpContext.stateDir()));
     }
 
     @Test
@@ -341,6 +444,227 @@ public class RocksDBStoreTest {
             stringDeserializer.deserialize(
                 null,
                 rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "3")))));
+    }
+
+    @Test
+    public void shouldMatchPositionAfterPut() {
+        rocksDBStore.init(context, rocksDBStore);
+
+        context.setRecordContext(new ProcessorRecordContext(0, 1, 0, "", new RecordHeaders()));
+        rocksDBStore.put(new Bytes(stringSerializer.serialize(null, "one")), stringSerializer.serialize(null, "A"));
+        context.setRecordContext(new ProcessorRecordContext(0, 2, 0, "", new RecordHeaders()));
+        rocksDBStore.put(new Bytes(stringSerializer.serialize(null, "two")), stringSerializer.serialize(null, "B"));
+        context.setRecordContext(new ProcessorRecordContext(0, 3, 0, "", new RecordHeaders()));
+        rocksDBStore.put(new Bytes(stringSerializer.serialize(null, "three")), stringSerializer.serialize(null, "C"));
+
+        final Position expected = Position.fromMap(mkMap(mkEntry("", mkMap(mkEntry(0, 3L)))));
+        final Position actual = rocksDBStore.getPosition();
+        assertEquals(expected, actual);
+    }
+
+    @Test
+    public void shouldReturnKeysWithGivenPrefix() {
+        final List<KeyValue<Bytes, byte[]>> entries = new ArrayList<>();
+        entries.add(new KeyValue<>(
+            new Bytes(stringSerializer.serialize(null, "k1")),
+            stringSerializer.serialize(null, "a")));
+        entries.add(new KeyValue<>(
+            new Bytes(stringSerializer.serialize(null, "prefix_3")),
+            stringSerializer.serialize(null, "b")));
+        entries.add(new KeyValue<>(
+            new Bytes(stringSerializer.serialize(null, "k2")),
+            stringSerializer.serialize(null, "c")));
+        entries.add(new KeyValue<>(
+            new Bytes(stringSerializer.serialize(null, "prefix_2")),
+            stringSerializer.serialize(null, "d")));
+        entries.add(new KeyValue<>(
+            new Bytes(stringSerializer.serialize(null, "k3")),
+            stringSerializer.serialize(null, "e")));
+        entries.add(new KeyValue<>(
+            new Bytes(stringSerializer.serialize(null, "prefix_1")),
+            stringSerializer.serialize(null, "f")));
+
+        rocksDBStore.init(context, rocksDBStore);
+        rocksDBStore.putAll(entries);
+        rocksDBStore.flush();
+
+        try (final KeyValueIterator<Bytes, byte[]> keysWithPrefix = rocksDBStore.prefixScan("prefix", stringSerializer)) {
+            final List<String> valuesWithPrefix = new ArrayList<>();
+            int numberOfKeysReturned = 0;
+
+            while (keysWithPrefix.hasNext()) {
+                final KeyValue<Bytes, byte[]> next = keysWithPrefix.next();
+                valuesWithPrefix.add(new String(next.value));
+                numberOfKeysReturned++;
+            }
+            assertThat(numberOfKeysReturned, is(3));
+            assertThat(valuesWithPrefix.get(0), is("f"));
+            assertThat(valuesWithPrefix.get(1), is("d"));
+            assertThat(valuesWithPrefix.get(2), is("b"));
+        }
+    }
+
+    @Test
+    public void shouldReturnKeysWithGivenPrefixExcludingNextKeyLargestKey() {
+        final List<KeyValue<Bytes, byte[]>> entries = new ArrayList<>();
+        entries.add(new KeyValue<>(
+            new Bytes(stringSerializer.serialize(null, "abc")),
+            stringSerializer.serialize(null, "f")));
+
+        entries.add(new KeyValue<>(
+            new Bytes(stringSerializer.serialize(null, "abcd")),
+            stringSerializer.serialize(null, "f")));
+
+        entries.add(new KeyValue<>(
+            new Bytes(stringSerializer.serialize(null, "abce")),
+            stringSerializer.serialize(null, "f")));
+
+        rocksDBStore.init(context, rocksDBStore);
+        rocksDBStore.putAll(entries);
+        rocksDBStore.flush();
+
+        try (final KeyValueIterator<Bytes, byte[]> keysWithPrefixAsabcd = rocksDBStore.prefixScan("abcd", stringSerializer)) {
+            int numberOfKeysReturned = 0;
+
+            while (keysWithPrefixAsabcd.hasNext()) {
+                keysWithPrefixAsabcd.next().key.get();
+                numberOfKeysReturned++;
+            }
+
+            assertThat(numberOfKeysReturned, is(1));
+        }
+    }
+
+    @Test
+    public void shouldAllowCustomManagedIterators() {
+        rocksDBStore = getRocksDBStoreWithCustomManagedIterators();
+        rocksDBStore.init(context, rocksDBStore);
+        final Set<KeyValueIterator<Bytes, byte[]>> openIterators = new HashSet<>();
+
+        final KeyValueIterator<Bytes, byte[]> prefixScanIterator = rocksDBStore.prefixScan("abcd", stringSerializer, openIterators);
+        assertThat(openIterators.size(), is(1));
+        prefixScanIterator.close();
+        assertThat(openIterators.size(), is(0));
+
+        final KeyValueIterator<Bytes, byte[]> rangeIterator = rocksDBStore.range(null, new Bytes(stringSerializer.serialize(null, "1")), openIterators);
+        assertThat(openIterators.size(), is(1));
+        rangeIterator.close();
+        assertThat(openIterators.size(), is(0));
+
+        final KeyValueIterator<Bytes, byte[]> reverseRangeIterator = rocksDBStore.reverseRange(null, new Bytes(stringSerializer.serialize(null, "1")), openIterators);
+        assertThat(openIterators.size(), is(1));
+        reverseRangeIterator.close();
+        assertThat(openIterators.size(), is(0));
+
+        final KeyValueIterator<Bytes, byte[]> allIterator = rocksDBStore.all(openIterators);
+        assertThat(openIterators.size(), is(1));
+        allIterator.close();
+        assertThat(openIterators.size(), is(0));
+
+        final KeyValueIterator<Bytes, byte[]> reverseAllIterator = rocksDBStore.reverseAll(openIterators);
+        assertThat(openIterators.size(), is(1));
+        reverseAllIterator.close();
+        assertThat(openIterators.size(), is(0));
+    }
+
+    @SuppressWarnings("resource")
+    @Test
+    public void shouldRequireOpenIteratorsWhenUsingCustomManagedIterators() {
+        rocksDBStore = getRocksDBStoreWithCustomManagedIterators();
+        rocksDBStore.init(context, rocksDBStore);
+
+        assertThrows(IllegalStateException.class,
+            () -> rocksDBStore.prefixScan("abcd", stringSerializer));
+        assertThrows(IllegalStateException.class,
+            () -> rocksDBStore.range(null, new Bytes(stringSerializer.serialize(null, "1"))));
+        assertThrows(IllegalStateException.class,
+            () -> rocksDBStore.reverseRange(null, new Bytes(stringSerializer.serialize(null, "1"))));
+        assertThrows(IllegalStateException.class, () -> rocksDBStore.all());
+        assertThrows(IllegalStateException.class, () -> rocksDBStore.reverseAll());
+    }
+
+    @SuppressWarnings("resource")
+    @Test
+    public void shouldNotAllowOpenIteratorsWhenUsingAutoManagedIterators() {
+        rocksDBStore = getRocksDBStore();
+        rocksDBStore.init(context, rocksDBStore);
+        final Set<KeyValueIterator<Bytes, byte[]>> openIterators = new HashSet<>();
+
+        assertThrows(IllegalStateException.class,
+            () -> rocksDBStore.prefixScan("abcd", stringSerializer, openIterators));
+        assertThrows(IllegalStateException.class,
+            () -> rocksDBStore.range(null, new Bytes(stringSerializer.serialize(null, "1")), openIterators));
+        assertThrows(IllegalStateException.class,
+            () -> rocksDBStore.reverseRange(null, new Bytes(stringSerializer.serialize(null, "1")), openIterators));
+        assertThrows(IllegalStateException.class, () -> rocksDBStore.all(openIterators));
+        assertThrows(IllegalStateException.class, () -> rocksDBStore.reverseAll(openIterators));
+    }
+
+    @SuppressWarnings("resource")
+    @Test
+    public void shouldReturnUUIDsWithStringPrefix() {
+        final List<KeyValue<Bytes, byte[]>> entries = new ArrayList<>();
+        final UUIDSerializer uuidSerializer = new UUIDSerializer();
+        final UUID uuid1 = UUID.randomUUID();
+        final UUID uuid2 = UUID.randomUUID();
+        final String prefix = uuid1.toString().substring(0, 4);
+        final int numMatches = uuid2.toString().substring(0, 4).equals(prefix) ? 2 : 1;
+
+        entries.add(new KeyValue<>(
+            new Bytes(uuidSerializer.serialize(null, uuid1)),
+            stringSerializer.serialize(null, "a")));
+        entries.add(new KeyValue<>(
+            new Bytes(uuidSerializer.serialize(null, uuid2)),
+            stringSerializer.serialize(null, "b")));
+
+        rocksDBStore.init(context, rocksDBStore);
+        rocksDBStore.putAll(entries);
+        rocksDBStore.flush();
+
+        try (final KeyValueIterator<Bytes, byte[]> keysWithPrefix = rocksDBStore.prefixScan(prefix, stringSerializer)) {
+            final List<String> valuesWithPrefix = new ArrayList<>();
+            int numberOfKeysReturned = 0;
+
+            while (keysWithPrefix.hasNext()) {
+                final KeyValue<Bytes, byte[]> next = keysWithPrefix.next();
+                valuesWithPrefix.add(new String(next.value));
+                numberOfKeysReturned++;
+            }
+
+            assertThat(numberOfKeysReturned, is(numMatches));
+            if (numMatches == 2) {
+                assertThat(valuesWithPrefix.get(0), either(is("a")).or(is("b")));
+            } else {
+                assertThat(valuesWithPrefix.get(0), is("a"));
+            }
+        }
+    }
+
+    @Test
+    public void shouldReturnNoKeys() {
+        final List<KeyValue<Bytes, byte[]>> entries = new ArrayList<>();
+        entries.add(new KeyValue<>(
+            new Bytes(stringSerializer.serialize(null, "a")),
+            stringSerializer.serialize(null, "a")));
+        entries.add(new KeyValue<>(
+            new Bytes(stringSerializer.serialize(null, "b")),
+            stringSerializer.serialize(null, "c")));
+        entries.add(new KeyValue<>(
+            new Bytes(stringSerializer.serialize(null, "c")),
+            stringSerializer.serialize(null, "e")));
+        rocksDBStore.init(context, rocksDBStore);
+        rocksDBStore.putAll(entries);
+        rocksDBStore.flush();
+
+        try (final KeyValueIterator<Bytes, byte[]> keysWithPrefix = rocksDBStore.prefixScan("d", stringSerializer)) {
+            int numberOfKeysReturned = 0;
+
+            while (keysWithPrefix.hasNext()) {
+                keysWithPrefix.next();
+                numberOfKeysReturned++;
+            }
+            assertThat(numberOfKeysReturned, is(0));
+        }
     }
 
     @Test
@@ -389,18 +713,19 @@ public class RocksDBStoreTest {
         rocksDBStore.init(context, rocksDBStore);
         context.restore(rocksDBStore.name(), entries);
 
-        final KeyValueIterator<Bytes, byte[]> iterator = rocksDBStore.all();
-        final Set<String> keys = new HashSet<>();
+        try (final KeyValueIterator<Bytes, byte[]> iterator = rocksDBStore.all()) {
+            final Set<String> keys = new HashSet<>();
 
-        while (iterator.hasNext()) {
-            keys.add(stringDeserializer.deserialize(null, iterator.next().key.get()));
+            while (iterator.hasNext()) {
+                keys.add(stringDeserializer.deserialize(null, iterator.next().key.get()));
+            }
+
+            assertThat(keys, equalTo(Set.of("2", "3")));
         }
-
-        assertThat(keys, equalTo(Utils.mkSet("2", "3")));
     }
 
     @Test
-    public void shouldHandleDeletesAndPutbackOnRestoreAll() {
+    public void shouldHandleDeletesAndPutBackOnRestoreAll() {
         final List<KeyValue<byte[], byte[]>> entries = new ArrayList<>();
         entries.add(new KeyValue<>("1".getBytes(UTF_8), "a".getBytes(UTF_8)));
         entries.add(new KeyValue<>("2".getBytes(UTF_8), "b".getBytes(UTF_8)));
@@ -413,30 +738,31 @@ public class RocksDBStoreTest {
         rocksDBStore.init(context, rocksDBStore);
         context.restore(rocksDBStore.name(), entries);
 
-        final KeyValueIterator<Bytes, byte[]> iterator = rocksDBStore.all();
-        final Set<String> keys = new HashSet<>();
+        try (final KeyValueIterator<Bytes, byte[]> iterator = rocksDBStore.all()) {
+            final Set<String> keys = new HashSet<>();
 
-        while (iterator.hasNext()) {
-            keys.add(stringDeserializer.deserialize(null, iterator.next().key.get()));
+            while (iterator.hasNext()) {
+                keys.add(stringDeserializer.deserialize(null, iterator.next().key.get()));
+            }
+
+            assertThat(keys, equalTo(Set.of("1", "2", "3")));
+
+            assertEquals(
+                "restored",
+                stringDeserializer.deserialize(
+                    null,
+                    rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "1")))));
+            assertEquals(
+                "b",
+                stringDeserializer.deserialize(
+                    null,
+                    rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "2")))));
+            assertEquals(
+                "c",
+                stringDeserializer.deserialize(
+                    null,
+                    rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "3")))));
         }
-
-        assertThat(keys, equalTo(Utils.mkSet("1", "2", "3")));
-
-        assertEquals(
-            "restored",
-            stringDeserializer.deserialize(
-                null,
-                rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "1")))));
-        assertEquals(
-            "b",
-            stringDeserializer.deserialize(
-                null,
-                rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "2")))));
-        assertEquals(
-            "c",
-            stringDeserializer.deserialize(
-                null,
-                rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "3")))));
     }
 
     @Test
@@ -471,14 +797,15 @@ public class RocksDBStoreTest {
 
         context.restore(rocksDBStore.name(), entries);
 
-        final KeyValueIterator<Bytes, byte[]> iterator = rocksDBStore.all();
-        final Set<String> keys = new HashSet<>();
+        try (final KeyValueIterator<Bytes, byte[]> iterator = rocksDBStore.all()) {
+            final Set<String> keys = new HashSet<>();
 
-        while (iterator.hasNext()) {
-            keys.add(stringDeserializer.deserialize(null, iterator.next().key.get()));
+            while (iterator.hasNext()) {
+                keys.add(stringDeserializer.deserialize(null, iterator.next().key.get()));
+            }
+
+            assertThat(keys, equalTo(Set.of("2", "3")));
         }
-
-        assertThat(keys, equalTo(Utils.mkSet("2", "3")));
     }
 
     @Test
@@ -514,21 +841,34 @@ public class RocksDBStoreTest {
     }
 
     @Test
-    public void shouldThrowNullPointerExceptionOnRange() {
+    public void shouldReturnValueOnRange() {
         rocksDBStore.init(context, rocksDBStore);
-        assertThrows(
-            NullPointerException.class,
-            () -> rocksDBStore.range(null, new Bytes(stringSerializer.serialize(null, "2"))));
+
+        final KeyValue<String, String> kv0 = new KeyValue<>("0", "zero");
+        final KeyValue<String, String> kv1 = new KeyValue<>("1", "one");
+        final KeyValue<String, String> kv2 = new KeyValue<>("2", "two");
+
+        rocksDBStore.put(new Bytes(kv0.key.getBytes(UTF_8)), kv0.value.getBytes(UTF_8));
+        rocksDBStore.put(new Bytes(kv1.key.getBytes(UTF_8)), kv1.value.getBytes(UTF_8));
+        rocksDBStore.put(new Bytes(kv2.key.getBytes(UTF_8)), kv2.value.getBytes(UTF_8));
+
+        final LinkedList<KeyValue<String, String>> expectedContents = new LinkedList<>();
+        expectedContents.add(kv0);
+        expectedContents.add(kv1);
+
+        try (final KeyValueIterator<Bytes, byte[]> iterator = rocksDBStore.range(null, new Bytes(stringSerializer.serialize(null, "1")))) {
+            assertEquals(expectedContents, getDeserializedList(iterator));
+        }
     }
 
-    @Test(expected = ProcessorStateException.class)
+    @Test
     public void shouldThrowProcessorStateExceptionOnPutDeletedDir() throws IOException {
         rocksDBStore.init(context, rocksDBStore);
         Utils.delete(dir);
         rocksDBStore.put(
             new Bytes(stringSerializer.serialize(null, "anyKey")),
             stringSerializer.serialize(null, "anyValue"));
-        rocksDBStore.flush();
+        assertThrows(ProcessorStateException.class, () -> rocksDBStore.flush());
     }
 
     @Test
@@ -536,7 +876,7 @@ public class RocksDBStoreTest {
         final Properties props = StreamsTestUtils.getStreamsConfig();
         props.put(StreamsConfig.ROCKSDB_CONFIG_SETTER_CLASS_CONFIG, TestingBloomFilterRocksDBConfigSetter.class);
         dir = TestUtils.tempDirectory();
-        context = new InternalMockProcessorContext(dir,
+        context = new InternalMockProcessorContext<>(dir,
             Serdes.String(),
             Serdes.String(),
             new StreamsConfig(props));
@@ -578,20 +918,21 @@ public class RocksDBStoreTest {
     }
 
     @Test
-    public void shouldVerifyThatMetricsGetMeasurementsFromRocksDB() {
+    public void shouldVerifyThatMetricsRecordedFromStatisticsGetMeasurementsFromRocksDB() {
         final TaskId taskId = new TaskId(0, 0);
 
         final Metrics metrics = new Metrics(new MetricConfig().recordLevel(RecordingLevel.DEBUG));
         final StreamsMetricsImpl streamsMetrics =
-            new StreamsMetricsImpl(metrics, "test-application", StreamsConfig.METRICS_LATEST, time);
+            new StreamsMetricsImpl(metrics, "test-application", "processId", time);
 
-        context = EasyMock.niceMock(InternalMockProcessorContext.class);
-        EasyMock.expect(context.metrics()).andStubReturn(streamsMetrics);
-        EasyMock.expect(context.taskId()).andStubReturn(taskId);
-        EasyMock.expect(context.appConfigs())
-            .andStubReturn(new StreamsConfig(StreamsTestUtils.getStreamsConfig()).originals());
-        EasyMock.expect(context.stateDir()).andStubReturn(dir);
-        EasyMock.replay(context);
+        context = mock(InternalMockProcessorContext.class);
+        when(context.metrics()).thenReturn(streamsMetrics);
+        when(context.taskId()).thenReturn(taskId);
+        when(context.appConfigs())
+            .thenReturn(new StreamsConfig(StreamsTestUtils.getStreamsConfig()).originals());
+        when(context.stateDir()).thenReturn(dir);
+        final MonotonicProcessorRecordContext processorRecordContext = new MonotonicProcessorRecordContext("test", 0);
+        when(context.recordMetadata()).thenReturn(Optional.of(processorRecordContext));
 
         rocksDBStore.init(context, rocksDBStore);
         final byte[] key = "hello".getBytes();
@@ -604,20 +945,300 @@ public class RocksDBStoreTest {
             "bytes-written-total",
             StreamsMetricsImpl.STATE_STORE_LEVEL_GROUP,
             "description is not verified",
-            streamsMetrics.storeLevelTagMap(Thread.currentThread().getName(), taskId.toString(), METRICS_SCOPE, DB_NAME)
+            streamsMetrics.storeLevelTagMap(taskId.toString(), METRICS_SCOPE, DB_NAME)
         ));
         assertThat((double) bytesWrittenTotal.metricValue(), greaterThan(0d));
     }
 
-    public static class MockRocksDbConfigSetter implements RocksDBConfigSetter {
-        static boolean called;
+    @Test
+    public void shouldVerifyThatMetricsRecordedFromPropertiesGetMeasurementsFromRocksDB() {
+        final TaskId taskId = new TaskId(0, 0);
 
-        @Override
-        public void setConfig(final String storeName, final Options options, final Map<String, Object> configs) {
-            called = true;
+        final Metrics metrics = new Metrics(new MetricConfig().recordLevel(RecordingLevel.INFO));
+        final StreamsMetricsImpl streamsMetrics =
+            new StreamsMetricsImpl(metrics, "test-application", "processId", time);
 
-            options.setLevel0FileNumCompactionTrigger(10);
+        context = mock(InternalMockProcessorContext.class);
+        when(context.metrics()).thenReturn(streamsMetrics);
+        when(context.taskId()).thenReturn(taskId);
+        when(context.appConfigs())
+                .thenReturn(new StreamsConfig(StreamsTestUtils.getStreamsConfig()).originals());
+        when(context.stateDir()).thenReturn(dir);
+        final MonotonicProcessorRecordContext processorRecordContext = new MonotonicProcessorRecordContext("test", 0);
+        when(context.recordMetadata()).thenReturn(Optional.of(processorRecordContext));
+
+        rocksDBStore.init(context, rocksDBStore);
+        final byte[] key = "hello".getBytes();
+        final byte[] value = "world".getBytes();
+        rocksDBStore.put(Bytes.wrap(key), value);
+
+        final Metric numberOfEntriesActiveMemTable = metrics.metric(new MetricName(
+            "num-entries-active-mem-table",
+            StreamsMetricsImpl.STATE_STORE_LEVEL_GROUP,
+            "description is not verified",
+            streamsMetrics.storeLevelTagMap(taskId.toString(), METRICS_SCOPE, DB_NAME)
+        ));
+        assertThat(numberOfEntriesActiveMemTable, notNullValue());
+        assertThat((BigInteger) numberOfEntriesActiveMemTable.metricValue(), greaterThan(BigInteger.valueOf(0)));
+    }
+
+    @Test
+    public void shouldVerifyThatPropertyBasedMetricsUseValidPropertyName() {
+        final TaskId taskId = new TaskId(0, 0);
+
+        final Metrics metrics = new Metrics(new MetricConfig().recordLevel(RecordingLevel.INFO));
+        final StreamsMetricsImpl streamsMetrics =
+            new StreamsMetricsImpl(metrics, "test-application", "processId", time);
+
+        final Properties props = StreamsTestUtils.getStreamsConfig();
+        context = mock(InternalMockProcessorContext.class);
+        when(context.metrics()).thenReturn(streamsMetrics);
+        when(context.taskId()).thenReturn(taskId);
+        when(context.appConfigs()).thenReturn(new StreamsConfig(props).originals());
+        when(context.stateDir()).thenReturn(dir);
+
+        rocksDBStore.init(context, rocksDBStore);
+
+        final List<String> propertyNames = Arrays.asList(
+            "num-entries-active-mem-table",
+            "num-deletes-active-mem-table",
+            "num-entries-imm-mem-tables",
+            "num-deletes-imm-mem-tables",
+            "num-immutable-mem-table",
+            "cur-size-active-mem-table",
+            "cur-size-all-mem-tables",
+            "size-all-mem-tables",
+            "mem-table-flush-pending",
+            "num-running-flushes",
+            "compaction-pending",
+            "num-running-compactions",
+            "estimate-pending-compaction-bytes",
+            "total-sst-files-size",
+            "live-sst-files-size",
+            "num-live-versions",
+            "block-cache-capacity",
+            "block-cache-usage",
+            "block-cache-pinned-usage",
+            "estimate-num-keys",
+            "estimate-table-readers-mem",
+            "background-errors"
+        );
+        for (final String propertyname : propertyNames) {
+            final Metric metric = metrics.metric(new MetricName(
+                propertyname,
+                StreamsMetricsImpl.STATE_STORE_LEVEL_GROUP,
+                "description is not verified",
+                streamsMetrics.storeLevelTagMap(taskId.toString(), METRICS_SCOPE, DB_NAME)
+            ));
+            assertThat("Metric " + propertyname + " not found!", metric, notNullValue());
+            metric.metricValue();
         }
+    }
+
+    @Test
+    public void shouldPerformRangeQueriesWithCachingDisabled() {
+        context.setTime(1L);
+        store.put(1, "hi");
+        store.put(2, "goodbye");
+        try (final KeyValueIterator<Integer, String> range = store.range(1, 2)) {
+            assertEquals("hi", range.next().value);
+            assertEquals("goodbye", range.next().value);
+            assertFalse(range.hasNext());
+        }
+    }
+
+    @Test
+    public void shouldPerformAllQueriesWithCachingDisabled() {
+        context.setTime(1L);
+        store.put(1, "hi");
+        store.put(2, "goodbye");
+        try (final KeyValueIterator<Integer, String> range = store.all()) {
+            assertEquals("hi", range.next().value);
+            assertEquals("goodbye", range.next().value);
+            assertFalse(range.hasNext());
+        }
+    }
+
+    @Test
+    public void shouldCloseOpenRangeIteratorsWhenStoreClosedAndThrowInvalidStateStoreOnHasNextAndNext() {
+        context.setTime(1L);
+        store.put(1, "hi");
+        store.put(2, "goodbye");
+        try (final KeyValueIterator<Integer, String> iteratorOne = store.range(1, 5);
+             final KeyValueIterator<Integer, String> iteratorTwo = store.range(1, 4)) {
+
+            assertTrue(iteratorOne.hasNext());
+            assertTrue(iteratorTwo.hasNext());
+
+            store.close();
+
+            assertThrows(InvalidStateStoreException.class, iteratorOne::hasNext);
+            assertThrows(InvalidStateStoreException.class, iteratorOne::next);
+            assertThrows(InvalidStateStoreException.class, iteratorTwo::hasNext);
+            assertThrows(InvalidStateStoreException.class, iteratorTwo::next);
+        }
+    }
+
+    @Test
+    public void shouldRestoreRecordsAndConsistencyVectorSingleTopic() {
+        final List<ConsumerRecord<byte[], byte[]>> entries = getChangelogRecords();
+        final Properties props = StreamsTestUtils.getStreamsConfig();
+        props.put(StreamsConfig.ROCKSDB_CONFIG_SETTER_CLASS_CONFIG, MockRocksDbConfigSetter.class);
+        props.put(InternalConfig.IQ_CONSISTENCY_OFFSET_VECTOR_ENABLED, true);
+        dir = TestUtils.tempDirectory();
+        context = new InternalMockProcessorContext<>(
+                dir,
+                Serdes.String(),
+                Serdes.String(),
+                new StreamsConfig(props)
+        );
+        rocksDBStore.init(context, rocksDBStore);
+        context.restoreWithHeaders(rocksDBStore.name(), entries);
+
+        assertEquals(
+                "a",
+                stringDeserializer.deserialize(
+                        null,
+                        rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "1")))));
+        assertEquals(
+                "b",
+                stringDeserializer.deserialize(
+                        null,
+                        rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "2")))));
+        assertEquals(
+                "c",
+                stringDeserializer.deserialize(
+                        null,
+                        rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "3")))));
+
+        assertThat(rocksDBStore.getPosition(), Matchers.notNullValue());
+        assertThat(rocksDBStore.getPosition().getPartitionPositions(""), Matchers.notNullValue());
+        assertThat(rocksDBStore.getPosition().getPartitionPositions(""), hasEntry(0, 3L));
+    }
+
+    @Test
+    public void shouldRestoreRecordsAndConsistencyVectorMultipleTopics() {
+        final List<ConsumerRecord<byte[], byte[]>> entries = getChangelogRecordsMultipleTopics();
+        final Properties props = StreamsTestUtils.getStreamsConfig();
+        props.put(StreamsConfig.ROCKSDB_CONFIG_SETTER_CLASS_CONFIG, MockRocksDbConfigSetter.class);
+        props.put(InternalConfig.IQ_CONSISTENCY_OFFSET_VECTOR_ENABLED, true);
+        dir = TestUtils.tempDirectory();
+        context = new InternalMockProcessorContext<>(
+                dir,
+                Serdes.String(),
+                Serdes.String(),
+                new StreamsConfig(props)
+        );
+        rocksDBStore.init(context, rocksDBStore);
+        context.restoreWithHeaders(rocksDBStore.name(), entries);
+
+        assertEquals(
+                "a",
+                stringDeserializer.deserialize(
+                        null,
+                        rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "1")))));
+        assertEquals(
+                "b",
+                stringDeserializer.deserialize(
+                        null,
+                        rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "2")))));
+        assertEquals(
+                "c",
+                stringDeserializer.deserialize(
+                        null,
+                        rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "3")))));
+
+        assertThat(rocksDBStore.getPosition(), Matchers.notNullValue());
+        assertThat(rocksDBStore.getPosition().getPartitionPositions("A"), Matchers.notNullValue());
+        assertThat(rocksDBStore.getPosition().getPartitionPositions("A"), hasEntry(0, 3L));
+        assertThat(rocksDBStore.getPosition().getPartitionPositions("B"), Matchers.notNullValue());
+        assertThat(rocksDBStore.getPosition().getPartitionPositions("B"), hasEntry(0, 2L));
+    }
+
+    @Test
+    public void shouldHandleTombstoneRecords() {
+        final List<ConsumerRecord<byte[], byte[]>> entries = getChangelogRecordsWithTombstones();
+        final Properties props = StreamsTestUtils.getStreamsConfig();
+        props.put(StreamsConfig.ROCKSDB_CONFIG_SETTER_CLASS_CONFIG, MockRocksDbConfigSetter.class);
+        props.put(InternalConfig.IQ_CONSISTENCY_OFFSET_VECTOR_ENABLED, true);
+        dir = TestUtils.tempDirectory();
+        context = new InternalMockProcessorContext<>(
+                dir,
+                Serdes.String(),
+                Serdes.String(),
+                new StreamsConfig(props)
+        );
+        rocksDBStore.init(context, rocksDBStore);
+        context.restoreWithHeaders(rocksDBStore.name(), entries);
+
+        assertNull(stringDeserializer.deserialize(
+                null,
+                rocksDBStore.get(new Bytes(stringSerializer.serialize(null, "1")))));
+
+        assertThat(rocksDBStore.getPosition(), Matchers.notNullValue());
+        assertThat(rocksDBStore.getPosition().getPartitionPositions("A"), hasEntry(0, 2L));
+    }
+
+    @Test
+    public void shouldNotThrowWhenRestoringOnMissingHeaders() {
+        final List<KeyValue<byte[], byte[]>> entries = getChangelogRecordsWithoutHeaders();
+        final Properties props = StreamsTestUtils.getStreamsConfig();
+        props.put(StreamsConfig.ROCKSDB_CONFIG_SETTER_CLASS_CONFIG, MockRocksDbConfigSetter.class);
+        props.put(InternalConfig.IQ_CONSISTENCY_OFFSET_VECTOR_ENABLED, true);
+        dir = TestUtils.tempDirectory();
+        context = new InternalMockProcessorContext<>(
+                dir,
+                Serdes.String(),
+                Serdes.String(),
+                new StreamsConfig(props)
+        );
+        rocksDBStore.init(context, rocksDBStore);
+        context.restore(rocksDBStore.name(), entries);
+        assertThat(rocksDBStore.getPosition(), is(Position.emptyPosition()));
+    }
+
+    private List<ConsumerRecord<byte[], byte[]>> getChangelogRecords() {
+        final List<ConsumerRecord<byte[], byte[]>> entries = new ArrayList<>();
+        entries.add(createChangelogRecord("1".getBytes(UTF_8), "a".getBytes(UTF_8), "", 0, 1));
+        entries.add(createChangelogRecord("2".getBytes(UTF_8), "b".getBytes(UTF_8), "", 0, 2));
+        entries.add(createChangelogRecord("3".getBytes(UTF_8), "c".getBytes(UTF_8), "", 0, 3));
+        return entries;
+    }
+
+    private List<ConsumerRecord<byte[], byte[]>> getChangelogRecordsMultipleTopics() {
+        final List<ConsumerRecord<byte[], byte[]>> entries = new ArrayList<>();
+        entries.add(createChangelogRecord("1".getBytes(UTF_8), "a".getBytes(UTF_8), "A", 0, 1));
+        entries.add(createChangelogRecord("2".getBytes(UTF_8), "b".getBytes(UTF_8), "B", 0, 2));
+        entries.add(createChangelogRecord("3".getBytes(UTF_8), "c".getBytes(UTF_8), "A", 0, 3));
+        return entries;
+    }
+
+    private List<ConsumerRecord<byte[], byte[]>> getChangelogRecordsWithTombstones() {
+        final List<ConsumerRecord<byte[], byte[]>> entries = new ArrayList<>();
+        entries.add(createChangelogRecord("1".getBytes(UTF_8), "a".getBytes(UTF_8), "A", 0, 1));
+        entries.add(createChangelogRecord("1".getBytes(UTF_8), null, "A", 0, 2));
+        return entries;
+    }
+
+    private List<KeyValue<byte[], byte[]>> getChangelogRecordsWithoutHeaders() {
+        final List<KeyValue<byte[], byte[]>> entries = new ArrayList<>();
+        entries.add(new KeyValue<>("1".getBytes(UTF_8), "a".getBytes(UTF_8)));
+        entries.add(new KeyValue<>("2".getBytes(UTF_8), "b".getBytes(UTF_8)));
+        entries.add(new KeyValue<>("3".getBytes(UTF_8), "c".getBytes(UTF_8)));
+        return entries;
+    }
+
+    private ConsumerRecord<byte[], byte[]> createChangelogRecord(
+            final byte[] key, final byte[] value, final String topic, final int partition, final long offset) {
+        final Headers headers = new RecordHeaders();
+        Position position = Position.emptyPosition();
+        position = position.withComponent(topic, partition, offset);
+        headers.add(ChangelogRecordDeserializationHelper.CHANGELOG_VERSION_HEADER_RECORD_CONSISTENCY);
+        headers.add(new RecordHeader(
+                ChangelogRecordDeserializationHelper.CHANGELOG_POSITION_HEADER_KEY,
+                PositionSerde.serialize(position).array()));
+        return new ConsumerRecord<>("", 0, 0L,  RecordBatch.NO_TIMESTAMP, TimestampType.NO_TIMESTAMP_TYPE, -1, -1,
+                key, value, headers, Optional.empty());
     }
 
     public static class TestingBloomFilterRocksDBConfigSetter implements RocksDBConfigSetter {
@@ -634,8 +1255,8 @@ public class RocksDBStoreTest {
             tableConfig.setBlockSize(4096L);
             if (enableBloomFilters) {
                 filter = new BloomFilter();
-                tableConfig.setFilter(filter);
-                options.optimizeFiltersForHits();
+                tableConfig.setFilterPolicy(filter);
+                options.setOptimizeFiltersForHits(true);
                 bloomFiltersSet = true;
             } else {
                 options.setOptimizeFiltersForHits(false);
@@ -662,4 +1283,16 @@ public class RocksDBStoreTest {
         return entries;
     }
 
+    private List<KeyValue<String, String>> getDeserializedList(final KeyValueIterator<Bytes, byte[]> iter) {
+        final List<KeyValue<Bytes, byte[]>> bytes = Utils.toList(iter);
+        return bytes.stream().map(kv -> new KeyValue<>(kv.key.toString(), stringDeserializer.deserialize(null, kv.value))).collect(Collectors.toList());
+    }
+
+    private Statistics getStatistics(final RocksDBStore rocksDBStore) throws Exception {
+        final Field statisticsField = rocksDBStore.getClass().getDeclaredField("statistics");
+        statisticsField.setAccessible(true);
+        final Statistics statistics = (Statistics) statisticsField.get(rocksDBStore);
+        statisticsField.setAccessible(false);
+        return statistics;
+    }
 }

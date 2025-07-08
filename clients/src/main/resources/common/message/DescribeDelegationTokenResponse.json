@@ -17,9 +17,11 @@
   "apiKey": 41,
   "type": "response",
   "name": "DescribeDelegationTokenResponse",
+  // Version 0 was removed in Apache Kafka 4.0, Version 1 is the new baseline.
   // Starting in version 1, on quota violation, brokers send out responses before throttling.
   // Version 2 adds flexible version support
-  "validVersions": "0-2",
+  // Version 3 adds token requester details
+  "validVersions": "1-3",
   "flexibleVersions": "2+",
   "fields": [
     { "name": "ErrorCode", "type": "int16", "versions": "0+",
@@ -30,6 +32,10 @@
         "about": "The token principal type." },
       { "name": "PrincipalName", "type": "string", "versions": "0+",
         "about": "The token principal name." },
+      { "name": "TokenRequesterPrincipalType", "type": "string", "versions": "3+",
+        "about": "The principal type of the requester of the token." },
+      { "name": "TokenRequesterPrincipalName", "type": "string", "versions": "3+",
+        "about": "The principal type of the requester of the token." },
       { "name": "IssueTimestamp", "type": "int64", "versions": "0+",
         "about": "The token issue timestamp in milliseconds." },
       { "name": "ExpiryTimestamp", "type": "int64", "versions": "0+",
@@ -43,9 +49,9 @@
       { "name": "Renewers", "type": "[]DescribedDelegationTokenRenewer", "versions": "0+",
         "about": "Those who are able to renew this token before it expires.", "fields": [
         { "name": "PrincipalType", "type": "string", "versions": "0+",
-          "about": "The renewer principal type" },
+          "about": "The renewer principal type." },
         { "name": "PrincipalName", "type": "string", "versions": "0+",
-          "about": "The renewer principal name" }
+          "about": "The renewer principal name." }
       ]}
     ]},
     { "name": "ThrottleTimeMs", "type": "int32", "versions": "0+",

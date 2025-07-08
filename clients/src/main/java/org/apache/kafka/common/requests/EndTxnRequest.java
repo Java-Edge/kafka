@@ -20,24 +20,31 @@ import org.apache.kafka.common.message.EndTxnRequestData;
 import org.apache.kafka.common.message.EndTxnResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
-
-import java.nio.ByteBuffer;
+import org.apache.kafka.common.protocol.Readable;
 
 public class EndTxnRequest extends AbstractRequest {
-
-    public final EndTxnRequestData data;
+    public static final short LAST_STABLE_VERSION_BEFORE_TRANSACTION_V2 = 4;
+    private final EndTxnRequestData data;
 
     public static class Builder extends AbstractRequest.Builder<EndTxnRequest> {
         public final EndTxnRequestData data;
+        public final boolean isTransactionV2Enabled;
 
-        public Builder(EndTxnRequestData data) {
-            super(ApiKeys.END_TXN);
+        public Builder(EndTxnRequestData data, boolean isTransactionV2Enabled) {
+            this(data, false, isTransactionV2Enabled);
+        }
+
+        public Builder(EndTxnRequestData data, boolean enableUnstableLastVersion, boolean isTransactionV2Enabled) {
+            super(ApiKeys.END_TXN, enableUnstableLastVersion);
             this.data = data;
+            this.isTransactionV2Enabled = isTransactionV2Enabled;
         }
 
         @Override
         public EndTxnRequest build(short version) {
+            if (!isTransactionV2Enabled) {
+                version = (short) Math.min(version, LAST_STABLE_VERSION_BEFORE_TRANSACTION_V2);
+            }
             return new EndTxnRequest(data, version);
         }
 
@@ -52,11 +59,6 @@ public class EndTxnRequest extends AbstractRequest {
         this.data = data;
     }
 
-    public EndTxnRequest(Struct struct, short version) {
-        super(ApiKeys.END_TXN, version);
-        this.data = new EndTxnRequestData(struct, version);
-    }
-
     public TransactionResult result() {
         if (data.committed())
             return TransactionResult.COMMIT;
@@ -65,8 +67,8 @@ public class EndTxnRequest extends AbstractRequest {
     }
 
     @Override
-    protected Struct toStruct() {
-        return data.toStruct(version());
+    public EndTxnRequestData data() {
+        return data;
     }
 
     @Override
@@ -77,7 +79,7 @@ public class EndTxnRequest extends AbstractRequest {
         );
     }
 
-    public static EndTxnRequest parse(ByteBuffer buffer, short version) {
-        return new EndTxnRequest(ApiKeys.END_TXN.parseRequest(version, buffer), version);
+    public static EndTxnRequest parse(Readable readable, short version) {
+        return new EndTxnRequest(new EndTxnRequestData(readable, version), version);
     }
 }

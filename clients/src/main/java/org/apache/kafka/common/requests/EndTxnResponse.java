@@ -19,9 +19,8 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.message.EndTxnResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
 import java.util.Map;
 
 /**
@@ -38,19 +37,11 @@ import java.util.Map;
  */
 public class EndTxnResponse extends AbstractResponse {
 
-    public final EndTxnResponseData data;
+    private final EndTxnResponseData data;
 
     public EndTxnResponse(EndTxnResponseData data) {
+        super(ApiKeys.END_TXN);
         this.data = data;
-    }
-
-    public EndTxnResponse(Struct struct) {
-        this(struct, (short) (EndTxnResponseData.SCHEMAS.length - 1));
-    }
-
-
-    public EndTxnResponse(Struct struct,  short version) {
-        this.data = new EndTxnResponseData(struct, version);
     }
 
     @Override
@@ -58,6 +49,10 @@ public class EndTxnResponse extends AbstractResponse {
         return data.throttleTimeMs();
     }
 
+    @Override
+    public void maybeSetThrottleTimeMs(int throttleTimeMs) {
+        data.setThrottleTimeMs(throttleTimeMs);
+    }
 
     public Errors error() {
         return Errors.forCode(data.errorCode());
@@ -69,12 +64,12 @@ public class EndTxnResponse extends AbstractResponse {
     }
 
     @Override
-    protected Struct toStruct(short version) {
-        return data.toStruct(version);
+    public EndTxnResponseData data() {
+        return data;
     }
 
-    public static EndTxnResponse parse(ByteBuffer buffer, short version) {
-        return new EndTxnResponse(ApiKeys.END_TXN.parseResponse(version, buffer), version);
+    public static EndTxnResponse parse(Readable readable, short version) {
+        return new EndTxnResponse(new EndTxnResponseData(readable, version));
     }
 
     @Override

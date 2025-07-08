@@ -17,15 +17,18 @@
 
 package kafka.log
 
-import java.util.Properties
+import java.util.{Optional, Properties}
 import java.util.concurrent.{Callable, Executors}
-
-import kafka.server.{BrokerTopicStats, FetchHighWatermark, LogDirFailureChannel}
-import kafka.utils.{KafkaScheduler, TestUtils}
+import kafka.utils.TestUtils
 import org.apache.kafka.common.record.SimpleRecord
 import org.apache.kafka.common.utils.{Time, Utils}
-import org.junit.Assert._
-import org.junit.{After, Before, Test}
+import org.apache.kafka.coordinator.transaction.TransactionLogConfig
+import org.apache.kafka.server.storage.log.FetchIsolation
+import org.apache.kafka.server.util.KafkaScheduler
+import org.apache.kafka.storage.internals.log.{LogConfig, LogDirFailureChannel, ProducerStateManagerConfig, UnifiedLog}
+import org.apache.kafka.storage.log.metrics.BrokerTopicStats
+import org.junit.jupiter.api.Assertions._
+import org.junit.jupiter.api.{AfterEach, BeforeEach, Test}
 
 import scala.collection.mutable.ListBuffer
 import scala.util.Random
@@ -37,12 +40,12 @@ class LogConcurrencyTest {
   private val tmpDir = TestUtils.tempDir()
   private val logDir = TestUtils.randomPartitionLogDir(tmpDir)
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     scheduler.startup()
   }
 
-  @After
+  @AfterEach
   def shutdown(): Unit = {
     scheduler.shutdown()
     Utils.delete(tmpDir)
@@ -56,12 +59,12 @@ class LogConcurrencyTest {
   @Test
   def testUncommittedDataNotConsumedFrequentSegmentRolls(): Unit = {
     val logProps = new Properties()
-    logProps.put(LogConfig.SegmentBytesProp, 237: Integer)
-    val logConfig = LogConfig(logProps)
+    logProps.put(LogConfig.INTERNAL_SEGMENT_BYTES_CONFIG, 237: Integer)
+    val logConfig = new LogConfig(logProps)
     testUncommittedDataNotConsumed(createLog(logConfig))
   }
 
-  def testUncommittedDataNotConsumed(log: Log): Unit = {
+  def testUncommittedDataNotConsumed(log: UnifiedLog): Unit = {
     val executor = Executors.newFixedThreadPool(2)
     try {
       val maxOffset = 5000
@@ -82,18 +85,13 @@ class LogConcurrencyTest {
    * Simple consumption task which reads the log in ascending order and collects
    * consumed batches for validation
    */
-  private class ConsumerTask(log: Log, lastOffset: Int) extends Callable[Unit] {
+  private class ConsumerTask(log: UnifiedLog, lastOffset: Int) extends Callable[Unit] {
     val consumedBatches = ListBuffer.empty[FetchedBatch]
 
     override def call(): Unit = {
       var fetchOffset = 0L
       while (log.highWatermark < lastOffset) {
-        val readInfo = log.read(
-          startOffset = fetchOffset,
-          maxLength = 1,
-          isolation = FetchHighWatermark,
-          minOneMessage = true
-        )
+        val readInfo = log.read(fetchOffset, 1, FetchIsolation.HIGH_WATERMARK, true)
         readInfo.records.batches().forEach { batch =>
           consumedBatches += FetchedBatch(batch.baseOffset, batch.partitionLeaderEpoch)
           fetchOffset = batch.lastOffset + 1
@@ -105,7 +103,7 @@ class LogConcurrencyTest {
   /**
    * This class simulates basic leader/follower behavior.
    */
-  private class LogAppendTask(log: Log, lastOffset: Long) extends Callable[Unit] {
+  private class LogAppendTask(log: UnifiedLog, lastOffset: Long) extends Callable[Unit] {
     override def call(): Unit = {
       var leaderEpoch = 1
       var isLeader = true
@@ -122,9 +120,14 @@ class LogConcurrencyTest {
               log.appendAsLeader(TestUtils.records(records), leaderEpoch)
               log.maybeIncrementHighWatermark(logEndOffsetMetadata)
             } else {
-              log.appendAsFollower(TestUtils.records(records,
-                baseOffset = logEndOffset,
-                partitionLeaderEpoch = leaderEpoch))
+              log.appendAsFollower(
+                TestUtils.records(
+                  records,
+                  baseOffset = logEndOffset,
+                  partitionLeaderEpoch = leaderEpoch
+                ),
+                Int.MaxValue
+              )
               log.updateHighWatermark(logEndOffset)
             }
 
@@ -140,30 +143,35 @@ class LogConcurrencyTest {
     }
   }
 
-  private def createLog(config: LogConfig = LogConfig(new Properties())): Log = {
-    Log(dir = logDir,
-      config = config,
-      logStartOffset = 0L,
-      recoveryPoint = 0L,
-      scheduler = scheduler,
-      brokerTopicStats = brokerTopicStats,
-      time = Time.SYSTEM,
-      maxProducerIdExpirationMs = 60 * 60 * 1000,
-      producerIdExpirationCheckIntervalMs = LogManager.ProducerIdExpirationCheckIntervalMs,
-      logDirFailureChannel = new LogDirFailureChannel(10))
+  private def createLog(config: LogConfig = new LogConfig(new Properties())): UnifiedLog = {
+    UnifiedLog.create(
+      logDir,
+      config,
+      0L,
+      0L,
+      scheduler,
+      brokerTopicStats,
+      Time.SYSTEM,
+      5 * 60 * 1000,
+      new ProducerStateManagerConfig(TransactionLogConfig.PRODUCER_ID_EXPIRATION_MS_DEFAULT, false),
+      TransactionLogConfig.PRODUCER_ID_EXPIRATION_CHECK_INTERVAL_MS_DEFAULT,
+      new LogDirFailureChannel(10),
+      true,
+      Optional.empty
+    )
   }
 
-  private def validateConsumedData(log: Log, consumedBatches: Iterable[FetchedBatch]): Unit = {
+  private def validateConsumedData(log: UnifiedLog, consumedBatches: Iterable[FetchedBatch]): Unit = {
     val iter = consumedBatches.iterator
-    log.logSegments.foreach { segment =>
+    log.logSegments.forEach { segment =>
       segment.log.batches.forEach { batch =>
         if (iter.hasNext) {
           val consumedBatch = iter.next()
           try {
-            assertEquals("Consumed batch with unexpected leader epoch",
-              batch.partitionLeaderEpoch, consumedBatch.epoch)
-            assertEquals("Consumed batch with unexpected base offset",
-              batch.baseOffset, consumedBatch.baseOffset)
+            assertEquals(batch.partitionLeaderEpoch,
+              consumedBatch.epoch, "Consumed batch with unexpected leader epoch")
+            assertEquals(batch.baseOffset,
+              consumedBatch.baseOffset, "Consumed batch with unexpected base offset")
           } catch {
             case t: Throwable =>
               throw new AssertionError(s"Consumed batch $consumedBatch " +

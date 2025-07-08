@@ -18,8 +18,8 @@ package org.apache.kafka.common.feature;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.stream.Collectors;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 import static java.util.stream.Collectors.joining;
 
@@ -32,7 +32,6 @@ import static java.util.stream.Collectors.joining;
  *
  * @param <VersionRangeType> is the type of version range.
  * @see SupportedVersionRange
- * @see FinalizedVersionRange
  */
 public class Features<VersionRangeType extends BaseVersionRange> {
     private final Map<String, VersionRangeType> features;
@@ -55,20 +54,6 @@ public class Features<VersionRangeType extends BaseVersionRange> {
      */
     public static Features<SupportedVersionRange> supportedFeatures(Map<String, SupportedVersionRange> features) {
         return new Features<>(features);
-    }
-
-    /**
-     * @param features   Map of feature name to FinalizedVersionRange.
-     *
-     * @return           Returns a new Features object representing finalized features.
-     */
-    public static Features<FinalizedVersionRange> finalizedFeatures(Map<String, FinalizedVersionRange> features) {
-        return new Features<>(features);
-    }
-
-    // Visible for testing.
-    public static Features<FinalizedVersionRange> emptyFinalizedFeatures() {
-        return new Features<>(new HashMap<>());
     }
 
     public static Features<SupportedVersionRange> emptySupportedFeatures() {
@@ -139,19 +124,6 @@ public class Features<VersionRangeType extends BaseVersionRange> {
     }
 
     /**
-     * Converts from a map to Features<FinalizedVersionRange>.
-     *
-     * @param featuresMap  the map representation of a Features<FinalizedVersionRange> object,
-     *                     generated using the toMap() API.
-     *
-     * @return             the Features<FinalizedVersionRange> object
-     */
-    public static Features<FinalizedVersionRange> fromFinalizedFeaturesMap(
-        Map<String, Map<String, Short>> featuresMap) {
-        return fromFeaturesMap(featuresMap, FinalizedVersionRange::fromMap);
-    }
-
-    /**
      * Converts from a map to Features<SupportedVersionRange>.
      *
      * @param featuresMap  the map representation of a Features<SupportedVersionRange> object,
@@ -173,7 +145,7 @@ public class Features<VersionRangeType extends BaseVersionRange> {
             return false;
         }
 
-        final Features that = (Features) other;
+        final Features<?> that = (Features<?>) other;
         return Objects.equals(this.features, that.features);
     }
 

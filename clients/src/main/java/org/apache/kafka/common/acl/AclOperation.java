@@ -17,8 +17,6 @@
 
 package org.apache.kafka.common.acl;
 
-import org.apache.kafka.common.annotation.InterfaceStability;
-
 import java.util.HashMap;
 import java.util.Locale;
 
@@ -38,9 +36,7 @@ import java.util.Locale;
  *
  * <li><code>ALLOW ALTER_CONFIGS</code> implies <code>ALLOW DESCRIBE_CONFIGS</code>
  * </ul>
- * The API for this class is still evolving and we may break compatibility in minor releases, if necessary.
  */
-@InterfaceStability.Evolving
 public enum AclOperation {
     /**
      * Represents any AclOperation which this client cannot understand, perhaps because this
@@ -106,12 +102,27 @@ public enum AclOperation {
     /**
      * IDEMPOTENT_WRITE operation.
      */
-    IDEMPOTENT_WRITE((byte) 12);
+    IDEMPOTENT_WRITE((byte) 12),
+
+    /**
+     * CREATE_TOKENS operation.
+     */
+    CREATE_TOKENS((byte) 13),
+
+    /**
+     * DESCRIBE_TOKENS operation.
+     */
+    DESCRIBE_TOKENS((byte) 14),
+
+    /**
+     * TWO_PHASE_COMMIT operation.
+     */
+    TWO_PHASE_COMMIT((byte) 15);
 
     // Note: we cannot have more than 30 ACL operations without modifying the format used
     // to describe ACL operations in MetadataResponse.
 
-    private final static HashMap<Byte, AclOperation> CODE_TO_VALUE = new HashMap<>();
+    private static final HashMap<Byte, AclOperation> CODE_TO_VALUE = new HashMap<>();
 
     static {
         for (AclOperation operation : AclOperation.values()) {

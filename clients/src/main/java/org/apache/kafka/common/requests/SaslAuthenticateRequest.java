@@ -19,9 +19,7 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.message.SaslAuthenticateRequestData;
 import org.apache.kafka.common.message.SaslAuthenticateResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.types.Struct;
-
-import java.nio.ByteBuffer;
+import org.apache.kafka.common.protocol.Readable;
 
 
 /**
@@ -49,28 +47,18 @@ public class SaslAuthenticateRequest extends AbstractRequest {
 
         @Override
         public String toString() {
-            StringBuilder bld = new StringBuilder();
-            bld.append("(type=SaslAuthenticateRequest)");
-            return bld.toString();
+            return "(type=SaslAuthenticateRequest)";
         }
     }
 
     private final SaslAuthenticateRequestData data;
-
-    public SaslAuthenticateRequest(SaslAuthenticateRequestData data) {
-        this(data, ApiKeys.SASL_AUTHENTICATE.latestVersion());
-    }
 
     public SaslAuthenticateRequest(SaslAuthenticateRequestData data, short version) {
         super(ApiKeys.SASL_AUTHENTICATE, version);
         this.data = data;
     }
 
-    public SaslAuthenticateRequest(Struct struct, short version) {
-        super(ApiKeys.SASL_AUTHENTICATE, version);
-        this.data = new SaslAuthenticateRequestData(struct, version);
-    }
-
+    @Override
     public SaslAuthenticateRequestData data() {
         return data;
     }
@@ -84,13 +72,8 @@ public class SaslAuthenticateRequest extends AbstractRequest {
         return new SaslAuthenticateResponse(response);
     }
 
-    public static SaslAuthenticateRequest parse(ByteBuffer buffer, short version) {
-        return new SaslAuthenticateRequest(ApiKeys.SASL_AUTHENTICATE.parseRequest(version, buffer), version);
-    }
-
-    @Override
-    protected Struct toStruct() {
-        return data.toStruct(version());
+    public static SaslAuthenticateRequest parse(Readable readable, short version) {
+        return new SaslAuthenticateRequest(new SaslAuthenticateRequestData(readable, version),
+            version);
     }
 }
-

@@ -16,48 +16,28 @@
  */
 package org.apache.kafka.connect.integration;
 
-import org.apache.kafka.common.config.ConfigDef;
-import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.MetricName;
+import org.apache.kafka.common.metrics.Gauge;
+import org.apache.kafka.common.metrics.Measurable;
+import org.apache.kafka.common.metrics.PluginMetrics;
 import org.apache.kafka.connect.connector.Task;
-import org.apache.kafka.connect.data.Schema;
-import org.apache.kafka.connect.header.ConnectHeaders;
-import org.apache.kafka.connect.runtime.TestSourceConnector;
 import org.apache.kafka.connect.source.SourceRecord;
-import org.apache.kafka.connect.source.SourceTask;
-import org.apache.kafka.tools.ThroughputThrottler;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
-import java.util.stream.Collectors;
-import java.util.stream.LongStream;
 
-/**
- * A source connector that is used in Apache Kafka integration tests to verify the behavior of
- * the Connect framework, but that can be used in other integration tests as a simple connector
- * that generates records of a fixed structure. The rate of record production can be adjusted
- * through the configs 'throughput' and 'messages.per.poll'
- */
-public class MonitorableSourceConnector extends TestSourceConnector {
-    private static final Logger log = LoggerFactory.getLogger(MonitorableSourceConnector.class);
+public class MonitorableSourceConnector extends TestableSourceConnector {
 
-    public static final String TOPIC_CONFIG = "topic";
-    private String connectorName;
-    private ConnectorHandle connectorHandle;
-    private Map<String, String> commonConfigs;
+    public static MetricName metricsName = null;
+    public static final String VALUE = "started";
 
     @Override
     public void start(Map<String, String> props) {
-        connectorHandle = RuntimeHandles.get().connectorHandle(props.get("name"));
-        connectorName = connectorHandle.name();
-        commonConfigs = props;
-        log.info("Started {} connector {}", this.getClass().getSimpleName(), connectorName);
-        connectorHandle.recordConnectorStart();
+        super.start(props);
+        PluginMetrics pluginMetrics = context.pluginMetrics();
+        metricsName = pluginMetrics.metricName("start", "description", new LinkedHashMap<>());
+        pluginMetrics.addMetric(metricsName, (Gauge<Object>) (config, now) -> VALUE);
     }
 
     @Override
@@ -65,105 +45,27 @@ public class MonitorableSourceConnector extends TestSourceConnector {
         return MonitorableSourceTask.class;
     }
 
-    @Override
-    public List<Map<String, String>> taskConfigs(int maxTasks) {
-        List<Map<String, String>> configs = new ArrayList<>();
-        for (int i = 0; i < maxTasks; i++) {
-            Map<String, String> config = new HashMap<>(commonConfigs);
-            config.put("connector.name", connectorName);
-            config.put("task.id", connectorName + "-" + i);
-            configs.add(config);
-        }
-        return configs;
-    }
+    public static class MonitorableSourceTask extends TestableSourceTask {
 
-    @Override
-    public void stop() {
-        log.info("Stopped {} connector {}", this.getClass().getSimpleName(), connectorName);
-        connectorHandle.recordConnectorStop();
-    }
-
-    @Override
-    public ConfigDef config() {
-        log.info("Configured {} connector {}", this.getClass().getSimpleName(), connectorName);
-        return new ConfigDef();
-    }
-
-    public static class MonitorableSourceTask extends SourceTask {
-        private String connectorName;
-        private String taskId;
-        private String topicName;
-        private TaskHandle taskHandle;
-        private volatile boolean stopped;
-        private long startingSeqno;
-        private long seqno;
-        private long throughput;
-        private int batchSize;
-        private ThroughputThrottler throttler;
-
-        @Override
-        public String version() {
-            return "unknown";
-        }
+        public static MetricName metricsName = null;
+        private int count = 0;
 
         @Override
         public void start(Map<String, String> props) {
-            taskId = props.get("task.id");
-            connectorName = props.get("connector.name");
-            topicName = props.getOrDefault(TOPIC_CONFIG, "sequential-topic");
-            throughput = Long.valueOf(props.getOrDefault("throughput", "-1"));
-            batchSize = Integer.valueOf(props.getOrDefault("messages.per.poll", "1"));
-            taskHandle = RuntimeHandles.get().connectorHandle(connectorName).taskHandle(taskId);
-            Map<String, Object> offset = Optional.ofNullable(
-                    context.offsetStorageReader().offset(Collections.singletonMap("task.id", taskId)))
-                    .orElse(Collections.emptyMap());
-            startingSeqno = Optional.ofNullable((Long) offset.get("saved")).orElse(0L);
-            log.info("Started {} task {} with properties {}", this.getClass().getSimpleName(), taskId, props);
-            throttler = new ThroughputThrottler(throughput, System.currentTimeMillis());
-            taskHandle.recordTaskStart();
+            super.start(props);
+            PluginMetrics pluginMetrics = context.pluginMetrics();
+            metricsName = pluginMetrics.metricName("poll", "description", new LinkedHashMap<>());
+            pluginMetrics.addMetric(metricsName, (Measurable) (config, now) -> count);
         }
 
         @Override
         public List<SourceRecord> poll() {
-            if (!stopped) {
-                if (throttler.shouldThrottle(seqno - startingSeqno, System.currentTimeMillis())) {
-                    throttler.throttle();
-                }
-                taskHandle.record(batchSize);
-                return LongStream.range(0, batchSize)
-                        .mapToObj(i -> new SourceRecord(
-                                Collections.singletonMap("task.id", taskId),
-                                Collections.singletonMap("saved", ++seqno),
-                                topicName,
-                                null,
-                                Schema.STRING_SCHEMA,
-                                "key-" + taskId + "-" + seqno,
-                                Schema.STRING_SCHEMA,
-                                "value-" + taskId + "-" + seqno,
-                                null,
-                                new ConnectHeaders().addLong("header-" + seqno, seqno)))
-                        .collect(Collectors.toList());
+            List<SourceRecord> records = super.poll();
+            if (records != null) {
+                count += records.size();
             }
-            return null;
+            return records;
         }
 
-        @Override
-        public void commit() {
-            log.info("Task {} committing offsets", taskId);
-            //TODO: save progress outside the offset topic, potentially in the task handle
-        }
-
-        @Override
-        public void commitRecord(SourceRecord record, RecordMetadata metadata) {
-            log.trace("Committing record: {}", record);
-            taskHandle.commit();
-        }
-
-        @Override
-        public void stop() {
-            log.info("Stopped {} task {}", this.getClass().getSimpleName(), taskId);
-            stopped = true;
-            taskHandle.recordTaskStop();
-        }
     }
 }

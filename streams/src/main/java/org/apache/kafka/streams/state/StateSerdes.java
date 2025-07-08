@@ -33,6 +33,9 @@ import java.util.Objects;
  */
 public final class StateSerdes<K, V> {
 
+    public static final int TIMESTAMP_SIZE = 8;
+    public static final int BOOLEAN_SIZE = 1;
+
     /**
      * Create a new instance of {@link StateSerdes} for the given state name and key-/value-type classes.
      *
@@ -187,6 +190,7 @@ public final class StateSerdes<K, V> {
      * @param value  the value to be serialized
      * @return       the serialized value
      */
+    @SuppressWarnings("rawtypes")
     public byte[] rawValue(final V value) {
         try {
             return valueSerde.serializer().serialize(topic, value);
@@ -194,7 +198,7 @@ public final class StateSerdes<K, V> {
             final String valueClass;
             final Class<? extends Serializer> serializerClass;
             if (valueSerializer() instanceof ValueAndTimestampSerializer) {
-                serializerClass = ((ValueAndTimestampSerializer) valueSerializer()).valueSerializer.getClass();
+                serializerClass = ((ValueAndTimestampSerializer<?>) valueSerializer()).valueSerializer.getClass();
                 valueClass = value == null ? "unknown because value is null" : ((ValueAndTimestamp) value).value().getClass().getName();
             } else {
                 serializerClass = valueSerializer().getClass();

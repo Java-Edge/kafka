@@ -17,19 +17,20 @@
 package org.apache.kafka.clients.producer;
 
 import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.Metric;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.PartitionInfo;
-import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.errors.ProducerFencedException;
+import org.apache.kafka.common.metrics.KafkaMetric;
 
 import java.io.Closeable;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 
 /**
  * The interface for the {@link KafkaProducer}
@@ -41,7 +42,14 @@ public interface Producer<K, V> extends Closeable {
     /**
      * See {@link KafkaProducer#initTransactions()}
      */
-    void initTransactions();
+    default void initTransactions() {
+        initTransactions(false);
+    }
+
+    /**
+     * See {@link KafkaProducer#initTransactions(boolean)}
+     */
+    void initTransactions(boolean keepPreparedTxn);
 
     /**
      * See {@link KafkaProducer#beginTransaction()}
@@ -49,16 +57,15 @@ public interface Producer<K, V> extends Closeable {
     void beginTransaction() throws ProducerFencedException;
 
     /**
-     * See {@link KafkaProducer#sendOffsetsToTransaction(Map, String)}
-     */
-    void sendOffsetsToTransaction(Map<TopicPartition, OffsetAndMetadata> offsets,
-                                  String consumerGroupId) throws ProducerFencedException;
-
-    /**
      * See {@link KafkaProducer#sendOffsetsToTransaction(Map, ConsumerGroupMetadata)}
      */
     void sendOffsetsToTransaction(Map<TopicPartition, OffsetAndMetadata> offsets,
                                   ConsumerGroupMetadata groupMetadata) throws ProducerFencedException;
+
+    /**
+     * See {@link KafkaProducer#prepareTransaction()}
+     */
+    PreparedTxnState prepareTransaction() throws ProducerFencedException;
 
     /**
      * See {@link KafkaProducer#commitTransaction()}
@@ -69,6 +76,21 @@ public interface Producer<K, V> extends Closeable {
      * See {@link KafkaProducer#abortTransaction()}
      */
     void abortTransaction() throws ProducerFencedException;
+
+    /**
+     * See {@link KafkaProducer#completeTransaction(PreparedTxnState)}
+     */
+    void completeTransaction(PreparedTxnState preparedTxnState) throws ProducerFencedException;
+
+    /**
+     * @see KafkaProducer#registerMetricForSubscription(KafkaMetric) 
+     */
+    void registerMetricForSubscription(KafkaMetric metric);
+
+    /**
+     * @see KafkaProducer#unregisterMetricFromSubscription(KafkaMetric) 
+     */
+    void unregisterMetricFromSubscription(KafkaMetric metric);
 
     /**
      * See {@link KafkaProducer#send(ProducerRecord)}
@@ -96,14 +118,14 @@ public interface Producer<K, V> extends Closeable {
     Map<MetricName, ? extends Metric> metrics();
 
     /**
+     * See {@link KafkaProducer#clientInstanceId(Duration)}}
+     */
+    Uuid clientInstanceId(Duration timeout);
+
+    /**
      * See {@link KafkaProducer#close()}
      */
     void close();
-
-    @Deprecated
-    default void close(long timeout, TimeUnit unit) {
-        close(Duration.ofMillis(unit.toMillis(timeout)));
-    }
 
     /**
      * See {@link KafkaProducer#close(Duration)}

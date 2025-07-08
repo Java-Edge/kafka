@@ -16,7 +16,6 @@
  */
 package org.apache.kafka.test;
 
-import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.consumer.MockConsumer;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.utils.Time;
@@ -41,7 +40,7 @@ public class MockInternalTopicManager extends InternalTopicManager {
                                     final StreamsConfig streamsConfig,
                                     final MockConsumer<byte[], byte[]> restoreConsumer,
                                     final boolean mockCreateInternalTopics) {
-        super(time, Admin.create(streamsConfig.originals()), streamsConfig);
+        super(time, new MockClientSupplier().getAdmin(streamsConfig.originals()), streamsConfig);
 
         this.restoreConsumer = restoreConsumer;
         this.mockCreateInternalTopics = mockCreateInternalTopics;
@@ -51,7 +50,7 @@ public class MockInternalTopicManager extends InternalTopicManager {
     public Set<String> makeReady(final Map<String, InternalTopicConfig> topics) {
         for (final InternalTopicConfig topic : topics.values()) {
             final String topicName = topic.name();
-            final int numberOfPartitions = topic.numberOfPartitions().get();
+            final int numberOfPartitions = topic.numberOfPartitions().orElseThrow();
             readyTopics.put(topicName, numberOfPartitions);
 
             final List<PartitionInfo> partitions = new ArrayList<>();

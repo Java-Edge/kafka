@@ -16,17 +16,18 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.message.FetchResponseData;
-import org.apache.kafka.common.network.NetworkSend;
 import org.apache.kafka.common.network.Send;
 import org.apache.kafka.common.protocol.ApiKeys;
+import org.apache.kafka.common.protocol.ByteBufferAccessor;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.MessageUtil;
+import org.apache.kafka.common.protocol.Readable;
+import org.apache.kafka.common.protocol.SendBuilder;
 
 import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
+import java.util.EnumMap;
 import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -34,159 +35,262 @@ import java.util.stream.Stream;
 public abstract class AbstractResponse implements AbstractRequestResponse {
     public static final int DEFAULT_THROTTLE_TIME = 0;
 
-    protected Send toSend(String destination, ResponseHeader header, short apiVersion) {
-        return new NetworkSend(destination, RequestUtils.serialize(header.toStruct(), toStruct(apiVersion)));
+    private final ApiKeys apiKey;
+
+    protected AbstractResponse(ApiKeys apiKey) {
+        this.apiKey = apiKey;
+    }
+
+    public final Send toSend(ResponseHeader header, short version) {
+        return SendBuilder.buildResponseSend(header, data(), version);
     }
 
     /**
-     * Visible for testing, typically {@link #toSend(String, ResponseHeader, short)} should be used instead.
+     * Serializes header and body without prefixing with size (unlike `toSend`, which does include a size prefix).
      */
-    public ByteBuffer serialize(short version, ResponseHeader responseHeader) {
-        return RequestUtils.serialize(responseHeader.toStruct(), toStruct(version));
+    final ByteBuffer serializeWithHeader(ResponseHeader header, short version) {
+        return RequestUtils.serialize(header.data(), header.headerVersion(), data(), version);
+    }
+
+    // Visible for testing
+    final ByteBufferAccessor serialize(short version) {
+        return MessageUtil.toByteBufferAccessor(data(), version);
     }
 
     /**
-     * Visible for testing, typically {@link #toSend(String, ResponseHeader, short)} should be used instead.
+     * The number of each type of error in the response, including {@link Errors#NONE} and top-level errors as well as
+     * more specifically scoped errors (such as topic or partition-level errors).
+     * @return A count of errors.
      */
-    public ByteBuffer serialize(ApiKeys apiKey, short version, int correlationId) {
-        ResponseHeader header =
-            new ResponseHeader(correlationId, apiKey.responseHeaderVersion(version));
-        return RequestUtils.serialize(header.toStruct(), toStruct(version));
-    }
-
     public abstract Map<Errors, Integer> errorCounts();
 
-    protected Map<Errors, Integer> errorCounts(Errors error) {
+    protected static Map<Errors, Integer> errorCounts(Errors error) {
         return Collections.singletonMap(error, 1);
     }
 
-    protected Map<Errors, Integer> errorCounts(Stream<Errors> errors) {
+    protected static Map<Errors, Integer> errorCounts(Stream<Errors> errors) {
         return errors.collect(Collectors.groupingBy(e -> e, Collectors.summingInt(e -> 1)));
     }
 
-    protected Map<Errors, Integer> errorCounts(Collection<Errors> errors) {
-        Map<Errors, Integer> errorCounts = new HashMap<>();
+    protected static Map<Errors, Integer> errorCounts(Collection<Errors> errors) {
+        Map<Errors, Integer> errorCounts = new EnumMap<>(Errors.class);
         for (Errors error : errors)
             updateErrorCounts(errorCounts, error);
         return errorCounts;
     }
 
-    protected Map<Errors, Integer> apiErrorCounts(Map<?, ApiError> errors) {
-        Map<Errors, Integer> errorCounts = new HashMap<>();
+    protected static Map<Errors, Integer> apiErrorCounts(Map<?, ApiError> errors) {
+        Map<Errors, Integer> errorCounts = new EnumMap<>(Errors.class);
         for (ApiError apiError : errors.values())
             updateErrorCounts(errorCounts, apiError.error());
         return errorCounts;
     }
 
-    protected void updateErrorCounts(Map<Errors, Integer> errorCounts, Errors error) {
+    protected static void updateErrorCounts(Map<Errors, Integer> errorCounts, Errors error) {
         Integer count = errorCounts.getOrDefault(error, 0);
         errorCounts.put(error, count + 1);
     }
 
-    protected abstract Struct toStruct(short version);
+    /**
+     * Parse a response from the provided buffer. The buffer is expected to hold both
+     * the {@link ResponseHeader} as well as the response payload.
+     */
+    public static AbstractResponse parseResponse(ByteBuffer buffer, RequestHeader requestHeader) {
+        ApiKeys apiKey = requestHeader.apiKey();
+        short apiVersion = requestHeader.apiVersion();
 
-    public static AbstractResponse parseResponse(ApiKeys apiKey, Struct struct, short version) {
+        ResponseHeader responseHeader = ResponseHeader.parse(buffer, apiKey.responseHeaderVersion(apiVersion));
+
+        if (requestHeader.correlationId() != responseHeader.correlationId()) {
+            throw new CorrelationIdMismatchException("Correlation id for response ("
+                + responseHeader.correlationId() + ") does not match request ("
+                + requestHeader.correlationId() + "), request header: " + requestHeader,
+                requestHeader.correlationId(), responseHeader.correlationId());
+        }
+
+        return AbstractResponse.parseResponse(apiKey, new ByteBufferAccessor(buffer), apiVersion);
+    }
+
+    public static AbstractResponse parseResponse(ApiKeys apiKey, Readable readable, short version) {
         switch (apiKey) {
             case PRODUCE:
-                return new ProduceResponse(struct);
+                return ProduceResponse.parse(readable, version);
             case FETCH:
-                return new FetchResponse<>(new FetchResponseData(struct, version));
+                return FetchResponse.parse(readable, version);
             case LIST_OFFSETS:
-                return new ListOffsetResponse(struct);
+                return ListOffsetsResponse.parse(readable, version);
             case METADATA:
-                return new MetadataResponse(struct, version);
+                return MetadataResponse.parse(readable, version);
             case OFFSET_COMMIT:
-                return new OffsetCommitResponse(struct, version);
+                return OffsetCommitResponse.parse(readable, version);
             case OFFSET_FETCH:
-                return new OffsetFetchResponse(struct, version);
+                return OffsetFetchResponse.parse(readable, version);
             case FIND_COORDINATOR:
-                return new FindCoordinatorResponse(struct, version);
+                return FindCoordinatorResponse.parse(readable, version);
             case JOIN_GROUP:
-                return new JoinGroupResponse(struct, version);
+                return JoinGroupResponse.parse(readable, version);
             case HEARTBEAT:
-                return new HeartbeatResponse(struct, version);
+                return HeartbeatResponse.parse(readable, version);
             case LEAVE_GROUP:
-                return new LeaveGroupResponse(struct, version);
+                return LeaveGroupResponse.parse(readable, version);
             case SYNC_GROUP:
-                return new SyncGroupResponse(struct, version);
-            case STOP_REPLICA:
-                return new StopReplicaResponse(struct, version);
-            case CONTROLLED_SHUTDOWN:
-                return new ControlledShutdownResponse(struct, version);
-            case UPDATE_METADATA:
-                return new UpdateMetadataResponse(struct, version);
-            case LEADER_AND_ISR:
-                return new LeaderAndIsrResponse(struct, version);
+                return SyncGroupResponse.parse(readable, version);
             case DESCRIBE_GROUPS:
-                return new DescribeGroupsResponse(struct, version);
+                return DescribeGroupsResponse.parse(readable, version);
             case LIST_GROUPS:
-                return new ListGroupsResponse(struct, version);
+                return ListGroupsResponse.parse(readable, version);
             case SASL_HANDSHAKE:
-                return new SaslHandshakeResponse(struct, version);
+                return SaslHandshakeResponse.parse(readable, version);
             case API_VERSIONS:
-                return ApiVersionsResponse.fromStruct(struct, version);
+                return ApiVersionsResponse.parse(readable, version);
             case CREATE_TOPICS:
-                return new CreateTopicsResponse(struct, version);
+                return CreateTopicsResponse.parse(readable, version);
             case DELETE_TOPICS:
-                return new DeleteTopicsResponse(struct, version);
+                return DeleteTopicsResponse.parse(readable, version);
             case DELETE_RECORDS:
-                return new DeleteRecordsResponse(struct, version);
+                return DeleteRecordsResponse.parse(readable, version);
             case INIT_PRODUCER_ID:
-                return new InitProducerIdResponse(struct, version);
+                return InitProducerIdResponse.parse(readable, version);
             case OFFSET_FOR_LEADER_EPOCH:
-                return new OffsetsForLeaderEpochResponse(struct);
+                return OffsetsForLeaderEpochResponse.parse(readable, version);
             case ADD_PARTITIONS_TO_TXN:
-                return new AddPartitionsToTxnResponse(struct, version);
+                return AddPartitionsToTxnResponse.parse(readable, version);
             case ADD_OFFSETS_TO_TXN:
-                return new AddOffsetsToTxnResponse(struct, version);
+                return AddOffsetsToTxnResponse.parse(readable, version);
             case END_TXN:
-                return new EndTxnResponse(struct, version);
+                return EndTxnResponse.parse(readable, version);
             case WRITE_TXN_MARKERS:
-                return new WriteTxnMarkersResponse(struct, version);
+                return WriteTxnMarkersResponse.parse(readable, version);
             case TXN_OFFSET_COMMIT:
-                return new TxnOffsetCommitResponse(struct, version);
+                return TxnOffsetCommitResponse.parse(readable, version);
             case DESCRIBE_ACLS:
-                return new DescribeAclsResponse(struct, version);
+                return DescribeAclsResponse.parse(readable, version);
             case CREATE_ACLS:
-                return new CreateAclsResponse(struct, version);
+                return CreateAclsResponse.parse(readable, version);
             case DELETE_ACLS:
-                return new DeleteAclsResponse(struct, version);
+                return DeleteAclsResponse.parse(readable, version);
             case DESCRIBE_CONFIGS:
-                return new DescribeConfigsResponse(struct, version);
+                return DescribeConfigsResponse.parse(readable, version);
             case ALTER_CONFIGS:
-                return new AlterConfigsResponse(struct, version);
+                return AlterConfigsResponse.parse(readable, version);
             case ALTER_REPLICA_LOG_DIRS:
-                return new AlterReplicaLogDirsResponse(struct);
+                return AlterReplicaLogDirsResponse.parse(readable, version);
             case DESCRIBE_LOG_DIRS:
-                return new DescribeLogDirsResponse(struct, version);
+                return DescribeLogDirsResponse.parse(readable, version);
             case SASL_AUTHENTICATE:
-                return new SaslAuthenticateResponse(struct, version);
+                return SaslAuthenticateResponse.parse(readable, version);
             case CREATE_PARTITIONS:
-                return new CreatePartitionsResponse(struct, version);
+                return CreatePartitionsResponse.parse(readable, version);
             case CREATE_DELEGATION_TOKEN:
-                return new CreateDelegationTokenResponse(struct, version);
+                return CreateDelegationTokenResponse.parse(readable, version);
             case RENEW_DELEGATION_TOKEN:
-                return new RenewDelegationTokenResponse(struct, version);
+                return RenewDelegationTokenResponse.parse(readable, version);
             case EXPIRE_DELEGATION_TOKEN:
-                return new ExpireDelegationTokenResponse(struct, version);
+                return ExpireDelegationTokenResponse.parse(readable, version);
             case DESCRIBE_DELEGATION_TOKEN:
-                return new DescribeDelegationTokenResponse(struct, version);
+                return DescribeDelegationTokenResponse.parse(readable, version);
             case DELETE_GROUPS:
-                return new DeleteGroupsResponse(struct, version);
+                return DeleteGroupsResponse.parse(readable, version);
             case ELECT_LEADERS:
-                return new ElectLeadersResponse(struct, version);
+                return ElectLeadersResponse.parse(readable, version);
             case INCREMENTAL_ALTER_CONFIGS:
-                return new IncrementalAlterConfigsResponse(struct, version);
+                return IncrementalAlterConfigsResponse.parse(readable, version);
             case ALTER_PARTITION_REASSIGNMENTS:
-                return new AlterPartitionReassignmentsResponse(struct, version);
+                return AlterPartitionReassignmentsResponse.parse(readable, version);
             case LIST_PARTITION_REASSIGNMENTS:
-                return new ListPartitionReassignmentsResponse(struct, version);
+                return ListPartitionReassignmentsResponse.parse(readable, version);
             case OFFSET_DELETE:
-                return new OffsetDeleteResponse(struct, version);
+                return OffsetDeleteResponse.parse(readable, version);
             case DESCRIBE_CLIENT_QUOTAS:
-                return new DescribeClientQuotasResponse(struct, version);
+                return DescribeClientQuotasResponse.parse(readable, version);
             case ALTER_CLIENT_QUOTAS:
-                return new AlterClientQuotasResponse(struct, version);
+                return AlterClientQuotasResponse.parse(readable, version);
+            case DESCRIBE_USER_SCRAM_CREDENTIALS:
+                return DescribeUserScramCredentialsResponse.parse(readable, version);
+            case ALTER_USER_SCRAM_CREDENTIALS:
+                return AlterUserScramCredentialsResponse.parse(readable, version);
+            case VOTE:
+                return VoteResponse.parse(readable, version);
+            case BEGIN_QUORUM_EPOCH:
+                return BeginQuorumEpochResponse.parse(readable, version);
+            case END_QUORUM_EPOCH:
+                return EndQuorumEpochResponse.parse(readable, version);
+            case DESCRIBE_QUORUM:
+                return DescribeQuorumResponse.parse(readable, version);
+            case ALTER_PARTITION:
+                return AlterPartitionResponse.parse(readable, version);
+            case UPDATE_FEATURES:
+                return UpdateFeaturesResponse.parse(readable, version);
+            case ENVELOPE:
+                return EnvelopeResponse.parse(readable, version);
+            case FETCH_SNAPSHOT:
+                return FetchSnapshotResponse.parse(readable, version);
+            case DESCRIBE_CLUSTER:
+                return DescribeClusterResponse.parse(readable, version);
+            case DESCRIBE_PRODUCERS:
+                return DescribeProducersResponse.parse(readable, version);
+            case BROKER_REGISTRATION:
+                return BrokerRegistrationResponse.parse(readable, version);
+            case BROKER_HEARTBEAT:
+                return BrokerHeartbeatResponse.parse(readable, version);
+            case UNREGISTER_BROKER:
+                return UnregisterBrokerResponse.parse(readable, version);
+            case DESCRIBE_TRANSACTIONS:
+                return DescribeTransactionsResponse.parse(readable, version);
+            case LIST_TRANSACTIONS:
+                return ListTransactionsResponse.parse(readable, version);
+            case ALLOCATE_PRODUCER_IDS:
+                return AllocateProducerIdsResponse.parse(readable, version);
+            case CONSUMER_GROUP_HEARTBEAT:
+                return ConsumerGroupHeartbeatResponse.parse(readable, version);
+            case CONSUMER_GROUP_DESCRIBE:
+                return ConsumerGroupDescribeResponse.parse(readable, version);
+            case CONTROLLER_REGISTRATION:
+                return ControllerRegistrationResponse.parse(readable, version);
+            case GET_TELEMETRY_SUBSCRIPTIONS:
+                return GetTelemetrySubscriptionsResponse.parse(readable, version);
+            case PUSH_TELEMETRY:
+                return PushTelemetryResponse.parse(readable, version);
+            case ASSIGN_REPLICAS_TO_DIRS:
+                return AssignReplicasToDirsResponse.parse(readable, version);
+            case LIST_CONFIG_RESOURCES:
+                return ListConfigResourcesResponse.parse(readable, version);
+            case DESCRIBE_TOPIC_PARTITIONS:
+                return DescribeTopicPartitionsResponse.parse(readable, version);
+            case SHARE_GROUP_HEARTBEAT:
+                return ShareGroupHeartbeatResponse.parse(readable, version);
+            case SHARE_GROUP_DESCRIBE:
+                return ShareGroupDescribeResponse.parse(readable, version);
+            case SHARE_FETCH:
+                return ShareFetchResponse.parse(readable, version);
+            case SHARE_ACKNOWLEDGE:
+                return ShareAcknowledgeResponse.parse(readable, version);
+            case ADD_RAFT_VOTER:
+                return AddRaftVoterResponse.parse(readable, version);
+            case REMOVE_RAFT_VOTER:
+                return RemoveRaftVoterResponse.parse(readable, version);
+            case UPDATE_RAFT_VOTER:
+                return UpdateRaftVoterResponse.parse(readable, version);
+            case INITIALIZE_SHARE_GROUP_STATE:
+                return InitializeShareGroupStateResponse.parse(readable, version);
+            case READ_SHARE_GROUP_STATE:
+                return ReadShareGroupStateResponse.parse(readable, version);
+            case WRITE_SHARE_GROUP_STATE:
+                return WriteShareGroupStateResponse.parse(readable, version);
+            case DELETE_SHARE_GROUP_STATE:
+                return DeleteShareGroupStateResponse.parse(readable, version);
+            case READ_SHARE_GROUP_STATE_SUMMARY:
+                return ReadShareGroupStateSummaryResponse.parse(readable, version);
+            case STREAMS_GROUP_HEARTBEAT:
+                return StreamsGroupHeartbeatResponse.parse(readable, version);
+            case STREAMS_GROUP_DESCRIBE:
+                return StreamsGroupDescribeResponse.parse(readable, version);
+            case DESCRIBE_SHARE_GROUP_OFFSETS:
+                return DescribeShareGroupOffsetsResponse.parse(readable, version);
+            case ALTER_SHARE_GROUP_OFFSETS:
+                return AlterShareGroupOffsetsResponse.parse(readable, version);
+            case DELETE_SHARE_GROUP_OFFSETS:
+                return DeleteShareGroupOffsetsResponse.parse(readable, version);
             default:
                 throw new AssertionError(String.format("ApiKey %s is not currently handled in `parseResponse`, the " +
                         "code should be updated to do so.", apiKey));
@@ -202,11 +306,25 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
         return false;
     }
 
-    public int throttleTimeMs() {
-        return DEFAULT_THROTTLE_TIME;
+    public ApiKeys apiKey() {
+        return apiKey;
     }
 
-    public String toString(short version) {
-        return toStruct(version).toString();
+    /**
+     * Get the throttle time in milliseconds. If the response schema does not
+     * support this field, then 0 will be returned.
+     */
+    public abstract int throttleTimeMs();
+
+    /**
+     * Set the throttle time in the response if the schema supports it. Otherwise,
+     * this is a no-op.
+     *
+     * @param throttleTimeMs The throttle time in milliseconds
+     */
+    public abstract void maybeSetThrottleTimeMs(int throttleTimeMs);
+
+    public String toString() {
+        return data().toString();
     }
 }

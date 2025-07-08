@@ -16,13 +16,11 @@
  */
 package org.apache.kafka.common.requests;
 
-import java.nio.ByteBuffer;
-
 import org.apache.kafka.common.message.RenewDelegationTokenRequestData;
 import org.apache.kafka.common.message.RenewDelegationTokenResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 
 public class RenewDelegationTokenRequest extends AbstractRequest {
 
@@ -33,20 +31,12 @@ public class RenewDelegationTokenRequest extends AbstractRequest {
         this.data = data;
     }
 
-    public RenewDelegationTokenRequest(Struct struct, short version) {
-        super(ApiKeys.RENEW_DELEGATION_TOKEN, version);
-        this.data = new RenewDelegationTokenRequestData(struct, version);
-    }
-
-    public static RenewDelegationTokenRequest parse(ByteBuffer buffer, short version) {
-        return new RenewDelegationTokenRequest(ApiKeys.RENEW_DELEGATION_TOKEN.parseRequest(version, buffer), version);
+    public static RenewDelegationTokenRequest parse(Readable readable, short version) {
+        return new RenewDelegationTokenRequest(new RenewDelegationTokenRequestData(
+            readable, version), version);
     }
 
     @Override
-    protected Struct toStruct() {
-        return data.toStruct(version());
-    }
-
     public RenewDelegationTokenRequestData data() {
         return data;
     }

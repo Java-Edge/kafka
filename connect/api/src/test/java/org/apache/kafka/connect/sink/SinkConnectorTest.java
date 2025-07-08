@@ -16,17 +16,18 @@
  */
 package org.apache.kafka.connect.sink;
 
-import java.util.List;
-import java.util.Map;
-
 import org.apache.kafka.common.config.ConfigDef;
+import org.apache.kafka.common.metrics.PluginMetrics;
 import org.apache.kafka.connect.connector.ConnectorContext;
 import org.apache.kafka.connect.connector.ConnectorTest;
 import org.apache.kafka.connect.connector.Task;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import java.util.List;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class SinkConnectorTest extends ConnectorTest {
 
@@ -50,6 +51,12 @@ public class SinkConnectorTest extends ConnectorTest {
 
         @Override
         public void raiseError(Exception e) {
+            // Unexpected in these tests
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public PluginMetrics pluginMetrics() {
             // Unexpected in these tests
             throw new UnsupportedOperationException();
         }

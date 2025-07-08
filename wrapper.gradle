@@ -24,7 +24,6 @@
 // Read more about the wrapper here: https://docs.gradle.org/current/userguide/gradle_wrapper.html
 wrapper {
     gradleVersion = project.gradleVersion
-    distributionType = Wrapper.DistributionType.ALL
 }
 
 // Custom task to inject support for downloading the gradle wrapper jar if it doesn't exist.
@@ -49,7 +48,7 @@ task bootstrapWrapper() {
         def bootstrapString = """
       # Loop in case we encounter an error.
       for attempt in 1 2 3; do
-        if [ ! -e $wrapperJarPath ]; then
+        if [ ! -e "$wrapperJarPath" ]; then
           if ! curl -s -S --retry 3 -L -o "$wrapperJarPath" "$wrapperJarUrl"; then
             rm -f "$wrapperJarPath"
             # Pause for a bit before looping in case the server throttled us.

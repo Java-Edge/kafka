@@ -25,6 +25,9 @@ public class OffsetSpec {
 
     public static class EarliestSpec extends OffsetSpec { }
     public static class LatestSpec extends OffsetSpec { }
+    public static class MaxTimestampSpec extends OffsetSpec { }
+    public static class EarliestLocalSpec extends OffsetSpec { }
+    public static class LatestTieredSpec extends OffsetSpec { }
     public static class TimestampSpec extends OffsetSpec {
         private final long timestamp;
 
@@ -60,4 +63,32 @@ public class OffsetSpec {
         return new TimestampSpec(timestamp);
     }
 
+    /**
+     * Used to retrieve the offset with the largest timestamp of a partition
+     * as message timestamps can be specified client side this may not match
+     * the log end offset returned by LatestSpec
+     */
+    public static OffsetSpec maxTimestamp() {
+        return new MaxTimestampSpec();
+    }
+
+    /**
+     * Used to retrieve the local log start offset.
+     * Local log start offset is the offset of a log above which reads
+     * are guaranteed to be served from the disk of the leader broker.
+     * <br/>
+     * Note: When tiered Storage is not enabled, it behaves the same as retrieving the earliest timestamp offset.
+     */
+    public static OffsetSpec earliestLocal() {
+        return new EarliestLocalSpec();
+    }
+
+    /**
+     * Used to retrieve the highest offset of data stored in remote storage.
+     * <br/>
+     * Note: When tiered storage is not enabled, we will return unknown offset.
+     */
+    public static OffsetSpec latestTiered() {
+        return new LatestTieredSpec();
+    }
 }

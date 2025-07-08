@@ -59,11 +59,11 @@ public class StreamsSmokeTest {
 
         if ("process".equals(command)) {
             if (!StreamsConfig.AT_LEAST_ONCE.equals(processingGuarantee) &&
-                !StreamsConfig.EXACTLY_ONCE.equals(processingGuarantee) &&
-                !StreamsConfig.EXACTLY_ONCE_BETA.equals(processingGuarantee)) {
+                !StreamsConfig.EXACTLY_ONCE_V2.equals(processingGuarantee)) {
 
-                System.err.println("processingGuarantee must be either " + StreamsConfig.AT_LEAST_ONCE + ", " +
-                    StreamsConfig.EXACTLY_ONCE + ", or " + StreamsConfig.EXACTLY_ONCE_BETA);
+                System.err.println("processingGuarantee must be either " +
+                                       StreamsConfig.AT_LEAST_ONCE + ", " +
+                                       StreamsConfig.EXACTLY_ONCE_V2);
 
                 Exit.exit(1);
             }
@@ -77,16 +77,21 @@ public class StreamsSmokeTest {
         switch (command) {
             case "run":
                 // this starts the driver (data generation and result verification)
-                final int numKeys = 10;
-                final int maxRecordsPerKey = 500;
+                final int numKeys = 20;
+                final int maxRecordsPerKey = 1000;
                 if (disableAutoTerminate) {
                     generatePerpetually(kafka, numKeys, maxRecordsPerKey);
                 } else {
-                    // slow down data production to span 30 seconds so that system tests have time to
+                    // slow down data production so that system tests have time to
                     // do their bounces, etc.
                     final Map<String, Set<Integer>> allData =
-                        generate(kafka, numKeys, maxRecordsPerKey, Duration.ofSeconds(30));
-                    SmokeTestDriver.verify(kafka, allData, maxRecordsPerKey);
+                        generate(kafka, numKeys, maxRecordsPerKey, Duration.ofSeconds(90));
+                    SmokeTestDriver.verify(
+                        kafka,
+                        allData,
+                        maxRecordsPerKey,
+                        StreamsConfig.EXACTLY_ONCE_V2.equals(processingGuarantee)
+                    );
                 }
                 break;
             case "process":

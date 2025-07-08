@@ -17,14 +17,13 @@
 
 package org.apache.kafka.common.requests;
 
-import java.nio.ByteBuffer;
-import java.util.HashMap;
-import java.util.Map;
-
 import org.apache.kafka.common.message.AlterReplicaLogDirsResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
+
+import java.util.EnumMap;
+import java.util.Map;
 
 /**
  * Possible error codes:
@@ -38,25 +37,14 @@ public class AlterReplicaLogDirsResponse extends AbstractResponse {
 
     private final AlterReplicaLogDirsResponseData data;
 
-    public AlterReplicaLogDirsResponse(Struct struct) {
-        this(struct, ApiKeys.ALTER_REPLICA_LOG_DIRS.latestVersion());
-    }
-
-    public AlterReplicaLogDirsResponse(Struct struct, short version) {
-        this.data = new AlterReplicaLogDirsResponseData(struct, version);
-    }
-
     public AlterReplicaLogDirsResponse(AlterReplicaLogDirsResponseData data) {
+        super(ApiKeys.ALTER_REPLICA_LOG_DIRS);
         this.data = data;
     }
 
+    @Override
     public AlterReplicaLogDirsResponseData data() {
         return data;
-    }
-
-    @Override
-    protected Struct toStruct(short version) {
-        return data.toStruct(version);
     }
 
     @Override
@@ -65,16 +53,21 @@ public class AlterReplicaLogDirsResponse extends AbstractResponse {
     }
 
     @Override
+    public void maybeSetThrottleTimeMs(int throttleTimeMs) {
+        data.setThrottleTimeMs(throttleTimeMs);
+    }
+
+    @Override
     public Map<Errors, Integer> errorCounts() {
-        Map<Errors, Integer> errorCounts = new HashMap<>();
+        Map<Errors, Integer> errorCounts = new EnumMap<>(Errors.class);
         data.results().forEach(topicResult ->
             topicResult.partitions().forEach(partitionResult ->
                 updateErrorCounts(errorCounts, Errors.forCode(partitionResult.errorCode()))));
         return errorCounts;
     }
 
-    public static AlterReplicaLogDirsResponse parse(ByteBuffer buffer, short version) {
-        return new AlterReplicaLogDirsResponse(ApiKeys.ALTER_REPLICA_LOG_DIRS.responseSchema(version).read(buffer));
+    public static AlterReplicaLogDirsResponse parse(Readable readable, short version) {
+        return new AlterReplicaLogDirsResponse(new AlterReplicaLogDirsResponseData(readable, version));
     }
 
     @Override

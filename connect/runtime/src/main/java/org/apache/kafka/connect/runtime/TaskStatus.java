@@ -20,8 +20,8 @@ import org.apache.kafka.connect.util.ConnectorTaskId;
 
 public class TaskStatus extends AbstractStatus<ConnectorTaskId> {
 
-    public TaskStatus(ConnectorTaskId id, State state, String workerUrl, int generation, String trace) {
-        super(id, state, workerUrl, generation, trace);
+    public TaskStatus(ConnectorTaskId id, State state, String workerUrl, int generation, String trace, String version) {
+        super(id, state, workerUrl, generation, trace, version);
     }
 
     public TaskStatus(ConnectorTaskId id, State state, String workerUrl, int generation) {
@@ -68,5 +68,11 @@ public class TaskStatus extends AbstractStatus<ConnectorTaskId> {
          * @param id The id of the task
          */
         void onDeletion(ConnectorTaskId id);
+
+        /**
+         * Invoked when the task is restarted asynchronously by the herder on processing a restart request.
+         * @param id The id of the task
+         */
+        void onRestart(ConnectorTaskId id);
     }
 }

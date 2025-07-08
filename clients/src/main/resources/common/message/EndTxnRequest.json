@@ -16,12 +16,20 @@
 {
   "apiKey": 26,
   "type": "request",
+  "listeners": ["broker"],
   "name": "EndTxnRequest",
   // Version 1 is the same as version 0.
   //
   // Version 2 adds the support for new error code PRODUCER_FENCED.
-  "validVersions": "0-2",
-  "flexibleVersions": "none",
+  //
+  // Version 3 enables flexible versions.
+  //
+  // Version 4 adds support for new error code TRANSACTION_ABORTABLE (KIP-890).
+  //
+  // Version 5 enables bumping epoch on every transaction (KIP-890 Part 2)
+  "latestVersionUnstable": false,
+  "validVersions": "0-5",
+  "flexibleVersions": "3+",
   "fields": [
     { "name": "TransactionalId", "type": "string", "versions": "0+", "entityType": "transactionalId",
       "about": "The ID of the transaction to end." },

@@ -17,11 +17,9 @@
 package org.apache.kafka.common.record;
 
 import org.apache.kafka.common.utils.AbstractIterator;
-import org.apache.kafka.common.utils.Time;
 
-import java.io.IOException;
-import java.nio.channels.GatheringByteChannel;
 import java.util.Iterator;
+import java.util.Optional;
 
 
 /**
@@ -43,34 +41,24 @@ import java.util.Iterator;
  *
  * See {@link MemoryRecords} for the in-memory representation and {@link FileRecords} for the on-disk representation.
  */
-public interface Records extends BaseRecords {
+public interface Records extends TransferableRecords {
     int OFFSET_OFFSET = 0;
     int OFFSET_LENGTH = 8;
     int SIZE_OFFSET = OFFSET_OFFSET + OFFSET_LENGTH;
     int SIZE_LENGTH = 4;
     int LOG_OVERHEAD = SIZE_OFFSET + SIZE_LENGTH;
 
-    // the magic offset is at the same offset for all current message formats, but the 4 bytes
+    // The magic offset is at the same offset for all current message formats, but the 4 bytes
     // between the size and the magic is dependent on the version.
-    int MAGIC_OFFSET = 16;
+    int MAGIC_OFFSET = LOG_OVERHEAD + 4;
     int MAGIC_LENGTH = 1;
     int HEADER_SIZE_UP_TO_MAGIC = MAGIC_OFFSET + MAGIC_LENGTH;
-
-    /**
-     * Attempts to write the contents of this buffer to a channel.
-     * @param channel The channel to write to
-     * @param position The position in the buffer to write from
-     * @param length The number of bytes to write
-     * @return The number of bytes actually written
-     * @throws IOException For any IO errors
-     */
-    long writeTo(GatheringByteChannel channel, long position, int length) throws IOException;
 
     /**
      * Get the record batches. Note that the signature allows subclasses
      * to return a more specific batch type. This enables optimizations such as in-place offset
      * assignment (see for example {@link DefaultRecordBatch}), and partial reading of
-     * record data (see {@link FileLogInputStream.FileChannelRecordBatch#magic()}.
+     * record data, see {@link FileLogInputStream.FileChannelRecordBatch#magic()}.
      * @return An iterator over the record batches of the log
      */
     Iterable<? extends RecordBatch> batches();
@@ -83,6 +71,13 @@ public interface Records extends BaseRecords {
     AbstractIterator<? extends RecordBatch> batchIterator();
 
     /**
+     * Return the last record batch if non-empty or an empty `Optional` otherwise.
+     *
+     * Note that this requires iterating over all the record batches and hence it's expensive.
+     */
+    Optional<RecordBatch> lastBatch();
+
+    /**
      * Check whether all batches in this buffer have a certain magic value.
      * @param magic The magic value to check
      * @return true if all record batches have a matching magic value, false otherwise
@@ -90,28 +85,24 @@ public interface Records extends BaseRecords {
     boolean hasMatchingMagic(byte magic);
 
     /**
-     * Check whether this log buffer has a magic value compatible with a particular value
-     * (i.e. whether all message sets contained in the buffer have a matching or lower magic).
-     * @param magic The magic version to ensure compatibility with
-     * @return true if all batches have compatible magic, false otherwise
-     */
-    boolean hasCompatibleMagic(byte magic);
-
-    /**
-     * Convert all batches in this buffer to the format passed as a parameter. Note that this requires
-     * deep iteration since all of the deep records must also be converted to the desired format.
-     * @param toMagic The magic value to convert to
-     * @param firstOffset The starting offset for returned records. This only impacts some cases. See
-     *                    {@link RecordsUtil#downConvert(Iterable, byte, long, Time)} for an explanation.
-     * @param time instance used for reporting stats
-     * @return A ConvertedRecords instance which may or may not contain the same instance in its records field.
-     */
-    ConvertedRecords<? extends Records> downConvert(byte toMagic, long firstOffset, Time time);
-
-    /**
      * Get an iterator over the records in this log. Note that this generally requires decompression,
      * and should therefore be used with care.
      * @return The record iterator
      */
     Iterable<Record> records();
+
+    /**
+     * Return a slice of records from this instance, which is a view into this set starting from the given position
+     * and with the given size limit.
+     *
+     * If the size is beyond the end of the records, the end will be based on the size of the records at the time of the read.
+     *
+     * If this records set is already sliced, the position will be taken relative to that slicing.
+     *
+     * @param position The start position to begin the read from. The position should be aligned to
+     *                 the batch boundary, else the returned records can't be iterated.
+     * @param size The number of bytes after the start position to include
+     * @return A sliced wrapper on this message set limited based on the given position and size
+     */
+    Records slice(int position, int size);
 }

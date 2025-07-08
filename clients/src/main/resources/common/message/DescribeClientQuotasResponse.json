@@ -12,13 +12,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
 {
   "apiKey": 48,
   "type": "response",
   "name": "DescribeClientQuotasResponse",
-  "validVersions": "0",
-  "flexibleVersions": "none",
+  // Version 1 enables flexible versions.
+  "validVersions": "0-1",
+  "flexibleVersions": "1+",
   "fields": [
     { "name": "ThrottleTimeMs", "type": "int32", "versions": "0+",
       "about": "The duration in milliseconds for which the request was throttled due to a quota violation, or zero if the request did not violate any quota." },
@@ -36,7 +36,7 @@
           "about": "The entity name, or null if the default." }
       ]},
       { "name": "Values", "type": "[]ValueData", "versions": "0+",
-	"about": "The quota values for the entity.", "fields": [
+        "about": "The quota values for the entity.", "fields": [
         { "name": "Key", "type": "string", "versions": "0+",
           "about": "The quota configuration key." },
         { "name": "Value", "type": "float64", "versions": "0+",

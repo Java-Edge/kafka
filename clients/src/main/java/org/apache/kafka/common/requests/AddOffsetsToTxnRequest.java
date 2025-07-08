@@ -20,13 +20,11 @@ import org.apache.kafka.common.message.AddOffsetsToTxnRequestData;
 import org.apache.kafka.common.message.AddOffsetsToTxnResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
-
-import java.nio.ByteBuffer;
+import org.apache.kafka.common.protocol.Readable;
 
 public class AddOffsetsToTxnRequest extends AbstractRequest {
 
-    public AddOffsetsToTxnRequestData data;
+    private final AddOffsetsToTxnRequestData data;
 
     public static class Builder extends AbstractRequest.Builder<AddOffsetsToTxnRequest> {
         public AddOffsetsToTxnRequestData data;
@@ -52,14 +50,9 @@ public class AddOffsetsToTxnRequest extends AbstractRequest {
         this.data = data;
     }
 
-    public AddOffsetsToTxnRequest(Struct struct, short version) {
-        super(ApiKeys.ADD_OFFSETS_TO_TXN, version);
-        this.data = new AddOffsetsToTxnRequestData(struct, version);
-    }
-
     @Override
-    protected Struct toStruct() {
-        return data.toStruct(version());
+    public AddOffsetsToTxnRequestData data() {
+        return data;
     }
 
     @Override
@@ -69,7 +62,7 @@ public class AddOffsetsToTxnRequest extends AbstractRequest {
                                                .setThrottleTimeMs(throttleTimeMs));
     }
 
-    public static AddOffsetsToTxnRequest parse(ByteBuffer buffer, short version) {
-        return new AddOffsetsToTxnRequest(ApiKeys.ADD_OFFSETS_TO_TXN.parseRequest(version, buffer), version);
+    public static AddOffsetsToTxnRequest parse(Readable readable, short version) {
+        return new AddOffsetsToTxnRequest(new AddOffsetsToTxnRequestData(readable, version), version);
     }
 }

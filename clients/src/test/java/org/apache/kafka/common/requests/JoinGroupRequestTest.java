@@ -19,16 +19,15 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.errors.InvalidConfigurationException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.message.JoinGroupRequestData;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.MessageUtil;
 import org.apache.kafka.test.TestUtils;
-import org.junit.Test;
 
-import java.nio.ByteBuffer;
+import org.junit.jupiter.api.Test;
+
 import java.util.Arrays;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class JoinGroupRequestTest {
 
@@ -49,52 +48,34 @@ public class JoinGroupRequestTest {
         String[] invalidGroupInstanceIds = {"", "foo bar", "..", "foo:bar", "foo=bar", ".", new String(longString)};
 
         for (String instanceId : invalidGroupInstanceIds) {
-            try {
-                JoinGroupRequest.validateGroupInstanceId(instanceId);
-                fail("No exception was thrown for invalid instance id: " + instanceId);
-            } catch (InvalidConfigurationException e) {
-                // Good
-            }
+            assertThrows(InvalidConfigurationException.class,
+                () -> JoinGroupRequest.validateGroupInstanceId(instanceId),
+                "InvalidConfigurationException expected as instance id is invalid.");
         }
     }
-
     @Test
-    public void shouldRecognizeInvalidCharactersInGroupInstanceIds() {
-        char[] invalidChars = {'/', '\\', ',', '\u0000', ':', '"', '\'', ';', '*', '?', ' ', '\t', '\r', '\n', '='};
-
-        for (char c : invalidChars) {
-            String instanceId = "Is " + c + "illegal";
-            assertFalse(JoinGroupRequest.containsValidPattern(instanceId));
-        }
-    }
-
-    @Test(expected = UnsupportedVersionException.class)
     public void testRequestVersionCompatibilityFailBuild() {
-        new JoinGroupRequest.Builder(
-                new JoinGroupRequestData()
-                        .setGroupId("groupId")
-                        .setMemberId("consumerId")
-                        .setGroupInstanceId("groupInstanceId")
-                        .setProtocolType("consumer")
-        ).build((short) 4);
+        assertThrows(UnsupportedVersionException.class, () -> new JoinGroupRequest.Builder(
+            new JoinGroupRequestData()
+                .setGroupId("groupId")
+                .setMemberId("consumerId")
+                .setGroupInstanceId("groupInstanceId")
+                .setProtocolType("consumer")
+        ).build((short) 4));
     }
 
     @Test
     public void testRebalanceTimeoutDefaultsToSessionTimeoutV0() {
         int sessionTimeoutMs = 30000;
+        short version = 0;
 
-        Struct struct = new JoinGroupRequestData()
+        var buffer = MessageUtil.toByteBufferAccessor(new JoinGroupRequestData()
                 .setGroupId("groupId")
                 .setMemberId("consumerId")
                 .setProtocolType("consumer")
-                .setSessionTimeoutMs(sessionTimeoutMs)
-                .toStruct((short) 0);
+                .setSessionTimeoutMs(sessionTimeoutMs), version);
 
-        ByteBuffer buffer = ByteBuffer.allocate(struct.sizeOf());
-        struct.writeTo(buffer);
-        buffer.flip();
-
-        JoinGroupRequest request = JoinGroupRequest.parse(buffer, (short) 0);
+        JoinGroupRequest request = JoinGroupRequest.parse(buffer, version);
         assertEquals(sessionTimeoutMs, request.data().sessionTimeoutMs());
         assertEquals(sessionTimeoutMs, request.data().rebalanceTimeoutMs());
     }

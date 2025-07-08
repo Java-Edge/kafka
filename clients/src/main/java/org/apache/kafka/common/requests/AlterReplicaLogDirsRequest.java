@@ -17,10 +17,6 @@
 
 package org.apache.kafka.common.requests;
 
-import java.nio.ByteBuffer;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.stream.Collectors;
 
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.message.AlterReplicaLogDirsRequestData;
@@ -28,7 +24,11 @@ import org.apache.kafka.common.message.AlterReplicaLogDirsResponseData;
 import org.apache.kafka.common.message.AlterReplicaLogDirsResponseData.AlterReplicaLogDirTopicResult;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 public class AlterReplicaLogDirsRequest extends AbstractRequest {
 
@@ -53,22 +53,16 @@ public class AlterReplicaLogDirsRequest extends AbstractRequest {
         }
     }
 
-    public AlterReplicaLogDirsRequest(Struct struct, short version) {
-        super(ApiKeys.ALTER_REPLICA_LOG_DIRS, version);
-        this.data = new AlterReplicaLogDirsRequestData(struct, version);
-    }
-
     public AlterReplicaLogDirsRequest(AlterReplicaLogDirsRequestData data, short version) {
         super(ApiKeys.ALTER_REPLICA_LOG_DIRS, version);
         this.data = data;
     }
 
     @Override
-    protected Struct toStruct() {
-        return data.toStruct(version());
+    public AlterReplicaLogDirsRequestData data() {
+        return data;
     }
 
-    @Override
     public AlterReplicaLogDirsResponse getErrorResponse(int throttleTimeMs, Throwable e) {
         AlterReplicaLogDirsResponseData data = new AlterReplicaLogDirsResponseData();
         data.setResults(this.data.dirs().stream().flatMap(alterDir ->
@@ -87,12 +81,12 @@ public class AlterReplicaLogDirsRequest extends AbstractRequest {
         data.dirs().forEach(alterDir ->
             alterDir.topics().forEach(topic ->
                 topic.partitions().forEach(partition ->
-                    result.put(new TopicPartition(topic.name(), partition.intValue()), alterDir.path())))
+                    result.put(new TopicPartition(topic.name(), partition), alterDir.path())))
         );
         return result;
     }
 
-    public static AlterReplicaLogDirsRequest parse(ByteBuffer buffer, short version) {
-        return new AlterReplicaLogDirsRequest(ApiKeys.ALTER_REPLICA_LOG_DIRS.parseRequest(version, buffer), version);
+    public static AlterReplicaLogDirsRequest parse(Readable readable, short version) {
+        return new AlterReplicaLogDirsRequest(new AlterReplicaLogDirsRequestData(readable, version), version);
     }
 }

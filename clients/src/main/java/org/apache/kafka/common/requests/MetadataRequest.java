@@ -16,18 +16,20 @@
  */
 package org.apache.kafka.common.requests;
 
+import org.apache.kafka.common.Uuid;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.message.MetadataRequestData;
 import org.apache.kafka.common.message.MetadataRequestData.MetadataRequestTopic;
 import org.apache.kafka.common.message.MetadataResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class MetadataRequest extends AbstractRequest {
@@ -49,15 +51,29 @@ public class MetadataRequest extends AbstractRequest {
 
         public Builder(List<String> topics, boolean allowAutoTopicCreation, short minVersion, short maxVersion) {
             super(ApiKeys.METADATA, minVersion, maxVersion);
+            this.data = requestTopicNamesOrAllTopics(topics, allowAutoTopicCreation);
+        }
+
+        private MetadataRequestData requestTopicNamesOrAllTopics(List<String> topics, boolean allowAutoTopicCreation) {
             MetadataRequestData data = new MetadataRequestData();
             if (topics == null)
                 data.setTopics(null);
             else {
                 topics.forEach(topic -> data.topics().add(new MetadataRequestTopic().setName(topic)));
             }
-
             data.setAllowAutoTopicCreation(allowAutoTopicCreation);
-            this.data = data;
+            return data;
+        }
+
+        private static MetadataRequestData requestTopicIds(Set<Uuid> topicIds) {
+            MetadataRequestData data = new MetadataRequestData();
+            if (topicIds == null)
+                data.setTopics(null);
+            else {
+                topicIds.forEach(topicId -> data.topics().add(new MetadataRequestTopic().setTopicId(topicId)));
+            }
+            data.setAllowAutoTopicCreation(false); // can't auto-create without topic name
+            return data;
         }
 
         public Builder(List<String> topics, boolean allowAutoTopicCreation) {
@@ -70,12 +86,33 @@ public class MetadataRequest extends AbstractRequest {
             return new Builder(ALL_TOPICS_REQUEST_DATA);
         }
 
+        /**
+         * @return Builder for metadata request using topic names.
+         */
+        public static Builder forTopicNames(List<String> topicNames, boolean allowAutoTopicCreation) {
+            return new MetadataRequest.Builder(topicNames, allowAutoTopicCreation);
+        }
+
+        /**
+         * @return Builder for metadata request using topic IDs.
+         */
+        public static Builder forTopicIds(Set<Uuid> topicIds) {
+            return new MetadataRequest.Builder(requestTopicIds(new HashSet<>(topicIds)));
+        }
+
         public boolean emptyTopicList() {
             return data.topics().isEmpty();
         }
 
         public boolean isAllTopics() {
             return data.topics() == null;
+        }
+
+        public List<Uuid> topicIds() {
+            return data.topics()
+                .stream()
+                .map(MetadataRequestTopic::topicId)
+                .collect(Collectors.toList());
         }
 
         public List<String> topics() {
@@ -92,6 +129,16 @@ public class MetadataRequest extends AbstractRequest {
             if (!data.allowAutoTopicCreation() && version < 4)
                 throw new UnsupportedVersionException("MetadataRequest versions older than 4 don't support the " +
                         "allowAutoTopicCreation field");
+            if (data.topics() != null) {
+                data.topics().forEach(topic -> {
+                    if (topic.name() == null && version < 12)
+                        throw new UnsupportedVersionException("MetadataRequest version " + version +
+                                " does not support null topic names.");
+                    if (!Uuid.ZERO_UUID.equals(topic.topicId()) && version < 12)
+                        throw new UnsupportedVersionException("MetadataRequest version " + version +
+                            " does not support non-zero topic IDs.");
+                });
+            }
             return new MetadataRequest(data, version);
         }
 
@@ -102,20 +149,13 @@ public class MetadataRequest extends AbstractRequest {
     }
 
     private final MetadataRequestData data;
-    private final short version;
 
     public MetadataRequest(MetadataRequestData data, short version) {
         super(ApiKeys.METADATA, version);
         this.data = data;
-        this.version = version;
     }
 
-    public MetadataRequest(Struct struct, short version) {
-        super(ApiKeys.METADATA, version);
-        this.data = new MetadataRequestData(struct, version);
-        this.version = version;
-    }
-
+    @Override
     public MetadataRequestData data() {
         return data;
     }
@@ -124,27 +164,32 @@ public class MetadataRequest extends AbstractRequest {
     public AbstractResponse getErrorResponse(int throttleTimeMs, Throwable e) {
         Errors error = Errors.forException(e);
         MetadataResponseData responseData = new MetadataResponseData();
-        if (topics() != null) {
-            for (String topic :topics())
+        if (data.topics() != null) {
+            for (MetadataRequestTopic topic : data.topics()) {
+                // the response does not allow null, so convert to empty string if necessary
+                String topicName = topic.name() == null ? "" : topic.name();
                 responseData.topics().add(new MetadataResponseData.MetadataResponseTopic()
-                    .setName(topic)
+                    .setName(topicName)
+                    .setTopicId(topic.topicId())
                     .setErrorCode(error.code())
                     .setIsInternal(false)
                     .setPartitions(Collections.emptyList()));
+            }
         }
 
         responseData.setThrottleTimeMs(throttleTimeMs);
-        return new MetadataResponse(responseData);
+        responseData.setErrorCode(error.code());
+        return new MetadataResponse(responseData, true);
     }
 
     public boolean isAllTopics() {
         return (data.topics() == null) ||
-            (data.topics().isEmpty() && version == 0); //In version 0, an empty topic list indicates
+            (data.topics().isEmpty() && version() == 0); // In version 0, an empty topic list indicates
                                                          // "request metadata for all topics."
     }
 
     public List<String> topics() {
-        if (isAllTopics()) //In version 0, we return null for empty topic list
+        if (isAllTopics()) // In version 0, we return null for empty topic list
             return null;
         else
             return data.topics()
@@ -153,12 +198,24 @@ public class MetadataRequest extends AbstractRequest {
                 .collect(Collectors.toList());
     }
 
+    public List<Uuid> topicIds() {
+        if (isAllTopics())
+            return Collections.emptyList();
+        else if (version() < 10)
+            return Collections.emptyList();
+        else
+            return data.topics()
+                    .stream()
+                    .map(MetadataRequestTopic::topicId)
+                    .collect(Collectors.toList());
+    }
+
     public boolean allowAutoTopicCreation() {
         return data.allowAutoTopicCreation();
     }
 
-    public static MetadataRequest parse(ByteBuffer buffer, short version) {
-        return new MetadataRequest(ApiKeys.METADATA.parseRequest(version, buffer), version);
+    public static MetadataRequest parse(Readable readable, short version) {
+        return new MetadataRequest(new MetadataRequestData(readable, version), version);
     }
 
     public static List<MetadataRequestTopic> convertToMetadataRequestTopic(final Collection<String> topics) {
@@ -167,8 +224,9 @@ public class MetadataRequest extends AbstractRequest {
             .collect(Collectors.toList());
     }
 
-    @Override
-    protected Struct toStruct() {
-        return data.toStruct(version);
+    public static List<MetadataRequestTopic> convertTopicIdsToMetadataRequestTopic(final Collection<Uuid> topicIds) {
+        return topicIds.stream().map(topicId -> new MetadataRequestTopic()
+                .setTopicId(topicId))
+                .collect(Collectors.toList());
     }
 }

@@ -19,31 +19,27 @@ package org.apache.kafka.common.requests;
 import org.apache.kafka.common.message.SyncGroupResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
 import java.util.Map;
 
 public class SyncGroupResponse extends AbstractResponse {
 
-    public final SyncGroupResponseData data;
+    private final SyncGroupResponseData data;
 
     public SyncGroupResponse(SyncGroupResponseData data) {
+        super(ApiKeys.SYNC_GROUP);
         this.data = data;
-    }
-
-    public SyncGroupResponse(Struct struct) {
-        short latestVersion = (short) (SyncGroupResponseData.SCHEMAS.length - 1);
-        this.data = new SyncGroupResponseData(struct, latestVersion);
-    }
-
-    public SyncGroupResponse(Struct struct, short version) {
-        this.data = new SyncGroupResponseData(struct, version);
     }
 
     @Override
     public int throttleTimeMs() {
         return data.throttleTimeMs();
+    }
+
+    @Override
+    public void maybeSetThrottleTimeMs(int throttleTimeMs) {
+        data.setThrottleTimeMs(throttleTimeMs);
     }
 
     public Errors error() {
@@ -56,8 +52,8 @@ public class SyncGroupResponse extends AbstractResponse {
     }
 
     @Override
-    protected Struct toStruct(short version) {
-        return data.toStruct(version);
+    public SyncGroupResponseData data() {
+        return data;
     }
 
     @Override
@@ -65,8 +61,8 @@ public class SyncGroupResponse extends AbstractResponse {
         return data.toString();
     }
 
-    public static SyncGroupResponse parse(ByteBuffer buffer, short version) {
-        return new SyncGroupResponse(ApiKeys.SYNC_GROUP.parseResponse(version, buffer), version);
+    public static SyncGroupResponse parse(Readable readable, short version) {
+        return new SyncGroupResponse(new SyncGroupResponseData(readable, version));
     }
 
     @Override

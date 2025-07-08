@@ -22,9 +22,8 @@ import org.apache.kafka.common.message.WriteTxnMarkersRequestData.WritableTxnMar
 import org.apache.kafka.common.message.WriteTxnMarkersRequestData.WritableTxnMarkerTopic;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -105,8 +104,13 @@ public class WriteTxnMarkersRequest extends AbstractRequest {
 
         public final WriteTxnMarkersRequestData data;
 
-        public Builder(final List<TxnMarkerEntry> markers) {
+        public Builder(WriteTxnMarkersRequestData data) {
             super(ApiKeys.WRITE_TXN_MARKERS);
+            this.data = data;
+        }
+
+        public Builder(final List<TxnMarkerEntry> markers) {
+            super(ApiKeys.WRITE_TXN_MARKERS, (short) 1); // if we add new versions, gate them behind metadata version
             List<WritableTxnMarker> dataMarkers = new ArrayList<>();
             for (TxnMarkerEntry marker : markers) {
                 final Map<String, WritableTxnMarkerTopic> topicMap = new HashMap<>();
@@ -134,21 +138,16 @@ public class WriteTxnMarkersRequest extends AbstractRequest {
         }
     }
 
-    public final WriteTxnMarkersRequestData data;
+    private final WriteTxnMarkersRequestData data;
 
     private WriteTxnMarkersRequest(WriteTxnMarkersRequestData data, short version) {
         super(ApiKeys.WRITE_TXN_MARKERS, version);
         this.data = data;
     }
 
-    public WriteTxnMarkersRequest(Struct struct, short version) {
-        super(ApiKeys.WRITE_TXN_MARKERS, version);
-        this.data = new WriteTxnMarkersRequestData(struct, version);
-    }
-
     @Override
-    protected Struct toStruct() {
-        return data.toStruct(version());
+    public WriteTxnMarkersRequestData data() {
+        return data;
     }
 
     @Override
@@ -189,8 +188,8 @@ public class WriteTxnMarkersRequest extends AbstractRequest {
         return markers;
     }
 
-    public static WriteTxnMarkersRequest parse(ByteBuffer buffer, short version) {
-        return new WriteTxnMarkersRequest(ApiKeys.WRITE_TXN_MARKERS.parseRequest(version, buffer), version);
+    public static WriteTxnMarkersRequest parse(Readable readable, short version) {
+        return new WriteTxnMarkersRequest(new WriteTxnMarkersRequestData(readable, version), version);
     }
 
     @Override

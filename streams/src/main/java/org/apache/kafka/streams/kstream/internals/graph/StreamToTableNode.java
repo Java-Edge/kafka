@@ -17,51 +17,28 @@
 
 package org.apache.kafka.streams.kstream.internals.graph;
 
-import org.apache.kafka.common.utils.Bytes;
-import org.apache.kafka.streams.kstream.internals.KTableSource;
-import org.apache.kafka.streams.kstream.internals.MaterializedInternal;
-import org.apache.kafka.streams.kstream.internals.TimestampedKeyValueStoreMaterializer;
 import org.apache.kafka.streams.processor.internals.InternalTopologyBuilder;
-import org.apache.kafka.streams.state.KeyValueStore;
-import org.apache.kafka.streams.state.StoreBuilder;
-import org.apache.kafka.streams.state.TimestampedKeyValueStore;
 
 /**
  * Represents a KTable convert From KStream
  */
-public class StreamToTableNode<K, V> extends StreamsGraphNode {
+public class StreamToTableNode<K, V> extends GraphNode {
 
-    private final ProcessorParameters<K, V> processorParameters;
-    private final MaterializedInternal<K, V, ?> materializedInternal;
+    private final ProcessorParameters<K, V, ?, ?> processorParameters;
 
     public StreamToTableNode(final String nodeName,
-                             final ProcessorParameters<K, V> processorParameters,
-                             final MaterializedInternal<K, V, ?> materializedInternal) {
+                             final ProcessorParameters<K, V, ?, ?> processorParameters) {
         super(nodeName);
         this.processorParameters = processorParameters;
-        this.materializedInternal = materializedInternal;
     }
 
     @Override
     public String toString() {
-        return "StreamToTableNode{" +
-            ", processorParameters=" + processorParameters +
-            ", materializedInternal=" + materializedInternal +
-            "} " + super.toString();
+        return "StreamToTableNode{" + super.toString() + "}";
     }
 
-    @SuppressWarnings("unchecked")
     @Override
     public void writeToTopology(final InternalTopologyBuilder topologyBuilder) {
-        final StoreBuilder<TimestampedKeyValueStore<K, V>> storeBuilder =
-            new TimestampedKeyValueStoreMaterializer<>((MaterializedInternal<K, V, KeyValueStore<Bytes, byte[]>>) materializedInternal).materialize();
-
-        final String processorName = processorParameters.processorName();
-        final KTableSource<K, V> ktableSource = (KTableSource<K, V>) processorParameters.processorSupplier();
-        topologyBuilder.addProcessor(processorName, processorParameters.processorSupplier(), parentNodeNames());
-
-        if (storeBuilder != null && ktableSource.materialized()) {
-            topologyBuilder.addStateStore(storeBuilder, processorName);
-        }
+        processorParameters.addProcessorTo(topologyBuilder, parentNodeNames());
     }
 }

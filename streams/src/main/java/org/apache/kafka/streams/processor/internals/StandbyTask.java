@@ -20,62 +20,72 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.metrics.Sensor;
-import org.apache.kafka.common.utils.LogContext;
+import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.StreamsMetrics;
+import org.apache.kafka.streams.TopologyConfig.TaskConfig;
 import org.apache.kafka.streams.errors.StreamsException;
+import org.apache.kafka.streams.errors.TaskCorruptedException;
 import org.apache.kafka.streams.errors.TaskMigratedException;
 import org.apache.kafka.streams.processor.TaskId;
 import org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl;
+import org.apache.kafka.streams.processor.internals.metrics.TaskMetrics;
 import org.apache.kafka.streams.processor.internals.metrics.ThreadMetrics;
 import org.apache.kafka.streams.state.internals.ThreadCache;
-import org.slf4j.Logger;
 
 import java.util.Collections;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+
+import static org.apache.kafka.streams.processor.internals.metrics.StreamsMetricsImpl.maybeRecordSensor;
 
 /**
  * A StandbyTask
  */
 public class StandbyTask extends AbstractTask implements Task {
-    private final Logger log;
-    private final String logPrefix;
-    private final Sensor closeTaskSensor;
     private final boolean eosEnabled;
-    private final InternalProcessorContext processorContext;
+    private final Sensor closeTaskSensor;
+    private final Sensor updateSensor;
     private final StreamsMetricsImpl streamsMetrics;
 
+    protected final InternalProcessorContext<?, ?> processorContext;
+
     /**
-     * @param id             the ID of this task
-     * @param partitions     input topic partitions, used for thread metadata only
-     * @param topology       the instance of {@link ProcessorTopology}
-     * @param config         the {@link StreamsConfig} specified by the user
-     * @param streamsMetrics the {@link StreamsMetrics} created by the thread
-     * @param stateMgr       the {@link ProcessorStateManager} for this task
-     * @param stateDirectory the {@link StateDirectory} created by the thread
+     * @param id              the ID of this task
+     * @param inputPartitions input topic partitions, used for thread metadata only
+     * @param topology        the instance of {@link ProcessorTopology}
+     * @param config          the {@link StreamsConfig} specified by the user
+     * @param streamsMetrics  the {@link StreamsMetrics} created by the thread
+     * @param stateMgr        the {@link ProcessorStateManager} for this task
+     * @param stateDirectory  the {@link StateDirectory} created by the thread
      */
     StandbyTask(final TaskId id,
-                final Set<TopicPartition> partitions,
+                final Set<TopicPartition> inputPartitions,
                 final ProcessorTopology topology,
-                final StreamsConfig config,
+                final TaskConfig config,
                 final StreamsMetricsImpl streamsMetrics,
                 final ProcessorStateManager stateMgr,
                 final StateDirectory stateDirectory,
                 final ThreadCache cache,
-                final InternalProcessorContext processorContext) {
-        super(id, topology, stateDirectory, stateMgr, partitions);
+                final InternalProcessorContext<?, ?> processorContext) {
+        super(
+            id,
+            topology,
+            stateDirectory,
+            stateMgr,
+            inputPartitions,
+            config,
+            "standby-task",
+            StandbyTask.class
+        );
         this.processorContext = processorContext;
         this.streamsMetrics = streamsMetrics;
         processorContext.transitionToStandby(cache);
 
-        final String threadIdPrefix = String.format("stream-thread [%s] ", Thread.currentThread().getName());
-        logPrefix = threadIdPrefix + String.format("%s [%s] ", "standby-task", id);
-        final LogContext logContext = new LogContext(logPrefix);
-        log = logContext.logger(getClass());
-
         closeTaskSensor = ThreadMetrics.closeTaskSensor(Thread.currentThread().getName(), streamsMetrics);
-        eosEnabled = StreamThread.eosEnabled(config);
+        updateSensor = TaskMetrics.updateSensor(Thread.currentThread().getName(), id.toString(), streamsMetrics);
+        this.eosEnabled = config.eosEnabled;
     }
 
     @Override
@@ -83,7 +93,17 @@ public class StandbyTask extends AbstractTask implements Task {
         return false;
     }
 
+    @Override
+    public void recordRestoration(final Time time, final long numRecords, final boolean initRemaining) {
+        if (initRemaining) {
+            throw new IllegalStateException("Standby task would not record remaining records to restore");
+        }
+
+        maybeRecordSensor(numRecords, time, updateSensor);
+    }
+
     /**
+     * @throws TaskCorruptedException if the state cannot be reused (with EOS) and needs to be reset)
      * @throws StreamsException fatal error, should close the thread
      */
     @Override
@@ -110,7 +130,7 @@ public class StandbyTask extends AbstractTask implements Task {
     }
 
     @Override
-    public void completeRestoration() {
+    public void completeRestoration(final java.util.function.Consumer<Set<TopicPartition>> offsetResetter) {
         throw new IllegalStateException("Standby task " + id + " should never be completing restoration");
     }
 
@@ -159,7 +179,7 @@ public class StandbyTask extends AbstractTask implements Task {
      *                          or flushing state store get IO errors; such error should cause the thread to die
      */
     @Override
-    public Map<TopicPartition, OffsetAndMetadata> prepareCommit() {
+    public Map<TopicPartition, OffsetAndMetadata> prepareCommit(final boolean clean) {
         switch (state()) {
             case CREATED:
                 log.debug("Skipped preparing created task for commit");
@@ -169,7 +189,11 @@ public class StandbyTask extends AbstractTask implements Task {
             case RUNNING:
             case SUSPENDED:
                 // do not need to flush state store caches in pre-commit since nothing would be sent for standby tasks
-                log.debug("Prepared {} task for committing", state());
+                if (!clean) {
+                    log.debug("Skipped preparing {} standby task with id {} for commit since the task is getting closed dirty.", state(), id);
+                } else {
+                    log.debug("Prepared {} task for committing", state());
+                }
 
                 break;
 
@@ -177,7 +201,7 @@ public class StandbyTask extends AbstractTask implements Task {
                 throw new IllegalStateException("Illegal state " + state() + " while preparing standby task " + id + " for committing ");
         }
 
-        return Collections.emptyMap();
+        return clean ? Collections.emptyMap() : null;
     }
 
     @Override
@@ -192,7 +216,7 @@ public class StandbyTask extends AbstractTask implements Task {
 
             case RUNNING:
             case SUSPENDED:
-                maybeWriteCheckpoint(enforceCheckpoint);
+                maybeCheckpoint(enforceCheckpoint);
 
                 log.debug("Finalized commit for {} task", state());
 
@@ -218,7 +242,7 @@ public class StandbyTask extends AbstractTask implements Task {
     }
 
     @Override
-    public void closeCleanAndRecycleState() {
+    public void prepareRecycle() {
         streamsMetrics.removeAllTaskLevelSensors(Thread.currentThread().getName(), id.toString());
         if (state() == State.SUSPENDED) {
             stateMgr.recycle();
@@ -229,7 +253,17 @@ public class StandbyTask extends AbstractTask implements Task {
         closeTaskSensor.record();
         transitionTo(State.CLOSED);
 
-        log.info("Closed clean and recycled state");
+        log.info("Closed and recycled state");
+    }
+
+    @Override
+    public void resumePollingForPartitionsWithAvailableSpace() {
+        // noop
+    }
+
+    @Override
+    public void updateLags() {
+        // noop
     }
 
     private void close(final boolean clean) {
@@ -282,12 +316,23 @@ public class StandbyTask extends AbstractTask implements Task {
     }
 
     @Override
-    public void addRecords(final TopicPartition partition, final Iterable<ConsumerRecord<byte[], byte[]>> records) {
-        throw new IllegalStateException("Attempted to add records to task " + id() + " for invalid input partition " + partition);
+    public Map<TopicPartition, Long> committedOffsets() {
+        return Collections.emptyMap();
     }
 
-    InternalProcessorContext processorContext() {
-        return processorContext;
+    @Override
+    public Map<TopicPartition, Long> highWaterMark() {
+        return Collections.emptyMap();
+    }
+
+    @Override
+    public Optional<Long> timeCurrentIdlingStarted() {
+        return Optional.empty();
+    }
+
+    @Override
+    public void addRecords(final TopicPartition partition, final Iterable<ConsumerRecord<byte[], byte[]>> records) {
+        throw new IllegalStateException("Attempted to add records to task " + id() + " for invalid input partition " + partition);
     }
 
     /**

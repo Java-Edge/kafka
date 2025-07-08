@@ -18,11 +18,12 @@ package org.apache.kafka.common.security.auth;
 
 import org.apache.kafka.common.Configurable;
 
-import javax.net.ssl.SSLEngine;
 import java.io.Closeable;
 import java.security.KeyStore;
 import java.util.Map;
 import java.util.Set;
+
+import javax.net.ssl.SSLEngine;
 
 /**
  * Plugin interface for allowing creation of <code>SSLEngine</code> object in a custom way.
@@ -62,7 +63,7 @@ public interface SslEngineFactory extends Configurable, Closeable {
      * <p>
      * For example, if the implementation depends on file-based key material, it can check if the file was updated
      * compared to the previous/last-loaded timestamp and return true.
-     * </>
+     * </p>
      *
      * @param nextConfigs       The new configuration we want to use.
      * @return                  True only if the underlying <code>SSLEngine</code> object should be rebuilt.

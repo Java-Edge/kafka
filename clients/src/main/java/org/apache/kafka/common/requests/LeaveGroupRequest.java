@@ -23,9 +23,8 @@ import org.apache.kafka.common.message.LeaveGroupResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
 import org.apache.kafka.common.protocol.MessageUtil;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 
-import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.List;
 
@@ -81,27 +80,31 @@ public class LeaveGroupRequest extends AbstractRequest {
         }
     }
     private final LeaveGroupRequestData data;
-    private final short version;
 
     private LeaveGroupRequest(LeaveGroupRequestData data, short version) {
         super(ApiKeys.LEAVE_GROUP, version);
         this.data = data;
-        this.version = version;
     }
 
-    public LeaveGroupRequest(Struct struct, short version) {
-        super(ApiKeys.LEAVE_GROUP, version);
-        this.data = new LeaveGroupRequestData(struct, version);
-        this.version = version;
-    }
-
+    @Override
     public LeaveGroupRequestData data() {
         return data;
     }
 
+    public LeaveGroupRequestData normalizedData() {
+        if (version() >= 3) {
+            return data;
+        } else {
+            return new LeaveGroupRequestData()
+                .setGroupId(data.groupId())
+                .setMembers(Collections.singletonList(
+                    new MemberIdentity().setMemberId(data.memberId())));
+        }
+    }
+
     public List<MemberIdentity> members() {
         // Before version 3, leave group request is still in single mode
-        return version <= 2 ? Collections.singletonList(
+        return version() <= 2 ? Collections.singletonList(
             new MemberIdentity()
                 .setMemberId(data.memberId())) : data.members();
     }
@@ -117,12 +120,7 @@ public class LeaveGroupRequest extends AbstractRequest {
         return new LeaveGroupResponse(responseData);
     }
 
-    public static LeaveGroupRequest parse(ByteBuffer buffer, short version) {
-        return new LeaveGroupRequest(ApiKeys.LEAVE_GROUP.parseRequest(version, buffer), version);
-    }
-
-    @Override
-    protected Struct toStruct() {
-        return data.toStruct(version);
+    public static LeaveGroupRequest parse(Readable readable, short version) {
+        return new LeaveGroupRequest(new LeaveGroupRequestData(readable, version), version);
     }
 }

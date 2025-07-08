@@ -19,20 +19,23 @@ package org.apache.kafka.clients.admin.internals;
 
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.Node;
-import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.errors.AuthenticationException;
+import org.apache.kafka.common.errors.AuthorizationException;
 import org.apache.kafka.common.utils.LogContext;
 import org.apache.kafka.common.utils.MockTime;
-import org.junit.Test;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.InetSocketAddress;
 import java.util.Collections;
 import java.util.HashMap;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class AdminMetadataManagerTest {
     private final MockTime time = new MockTime();
@@ -40,7 +43,15 @@ public class AdminMetadataManagerTest {
     private final long refreshBackoffMs = 100;
     private final long metadataExpireMs = 60000;
     private final AdminMetadataManager mgr = new AdminMetadataManager(
-            logContext, refreshBackoffMs, metadataExpireMs);
+            logContext, refreshBackoffMs, metadataExpireMs, false);
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    public void testSetUsingBootstrapControllers(boolean usingBootstrapControllers) {
+        AdminMetadataManager manager = new AdminMetadataManager(
+                logContext, refreshBackoffMs, metadataExpireMs, usingBootstrapControllers);
+        assertEquals(usingBootstrapControllers, manager.usingBootstrapControllers());
+    }
 
     @Test
     public void testMetadataReady() {
@@ -83,15 +94,60 @@ public class AdminMetadataManagerTest {
         mgr.transitionToUpdatePending(time.milliseconds());
         mgr.updateFailed(new AuthenticationException("Authentication failed"));
         assertEquals(refreshBackoffMs, mgr.metadataFetchDelayMs(time.milliseconds()));
-        try {
-            mgr.isReady();
-            fail("Expected AuthenticationException to be thrown");
-        } catch (AuthenticationException e) {
-            // Expected
-        }
-
+        assertThrows(AuthenticationException.class, mgr::isReady);
         mgr.update(mockCluster(), time.milliseconds());
         assertTrue(mgr.isReady());
+    }
+
+    @Test
+    public void testAuthorizationFailure() {
+        mgr.transitionToUpdatePending(time.milliseconds());
+        mgr.updateFailed(new AuthorizationException("Authorization failed"));
+        assertEquals(refreshBackoffMs, mgr.metadataFetchDelayMs(time.milliseconds()));
+        assertThrows(AuthorizationException.class, mgr::isReady);
+        mgr.update(mockCluster(), time.milliseconds());
+        assertTrue(mgr.isReady());
+    }
+
+    @Test
+    public void testNeedsRebootstrap() {
+        long rebootstrapTriggerMs = 1000;
+        mgr.update(Cluster.bootstrap(Collections.singletonList(new InetSocketAddress("localhost", 9999))), time.milliseconds());
+        assertFalse(mgr.needsRebootstrap(time.milliseconds(), rebootstrapTriggerMs));
+        assertFalse(mgr.needsRebootstrap(time.milliseconds() + 2000, rebootstrapTriggerMs));
+
+        mgr.transitionToUpdatePending(time.milliseconds());
+        assertFalse(mgr.needsRebootstrap(time.milliseconds(), rebootstrapTriggerMs));
+        assertTrue(mgr.needsRebootstrap(time.milliseconds() + 1001, rebootstrapTriggerMs));
+
+        time.sleep(100);
+        mgr.updateFailed(new RuntimeException());
+        assertFalse(mgr.needsRebootstrap(time.milliseconds() + 900, rebootstrapTriggerMs));
+        assertTrue(mgr.needsRebootstrap(time.milliseconds() + 901, rebootstrapTriggerMs));
+
+        time.sleep(1000);
+        mgr.update(mockCluster(), time.milliseconds());
+        assertFalse(mgr.needsRebootstrap(time.milliseconds(), rebootstrapTriggerMs));
+        assertFalse(mgr.needsRebootstrap(time.milliseconds() + 2000, rebootstrapTriggerMs));
+
+        time.sleep(1000);
+        mgr.transitionToUpdatePending(time.milliseconds());
+        assertFalse(mgr.needsRebootstrap(time.milliseconds(), rebootstrapTriggerMs));
+        assertTrue(mgr.needsRebootstrap(time.milliseconds() + 1001, rebootstrapTriggerMs));
+
+        time.sleep(1001);
+        assertTrue(mgr.needsRebootstrap(time.milliseconds(), rebootstrapTriggerMs));
+        mgr.rebootstrap(time.milliseconds());
+        assertFalse(mgr.needsRebootstrap(time.milliseconds(), rebootstrapTriggerMs));
+        assertFalse(mgr.needsRebootstrap(time.milliseconds() + 1000, rebootstrapTriggerMs));
+        assertTrue(mgr.needsRebootstrap(time.milliseconds() + 1001, rebootstrapTriggerMs));
+
+        mgr.initiateRebootstrap();
+        assertTrue(mgr.needsRebootstrap(time.milliseconds(), rebootstrapTriggerMs));
+        mgr.rebootstrap(time.milliseconds());
+        assertFalse(mgr.needsRebootstrap(time.milliseconds(), rebootstrapTriggerMs));
+        assertFalse(mgr.needsRebootstrap(time.milliseconds() + 1000, rebootstrapTriggerMs));
+        assertTrue(mgr.needsRebootstrap(time.milliseconds() + 1001, rebootstrapTriggerMs));
     }
 
     private static Cluster mockCluster() {
@@ -100,8 +156,8 @@ public class AdminMetadataManagerTest {
         nodes.put(1, new Node(1, "localhost", 8122));
         nodes.put(2, new Node(2, "localhost", 8123));
         return new Cluster("mockClusterId", nodes.values(),
-                Collections.<PartitionInfo>emptySet(), Collections.<String>emptySet(),
-                Collections.<String>emptySet(), nodes.get(0));
+                Collections.emptySet(), Collections.emptySet(),
+                Collections.emptySet(), nodes.get(0));
     }
 
 }

@@ -16,17 +16,26 @@
  */
 package org.apache.kafka.streams.tests;
 
+import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
+import org.apache.kafka.clients.consumer.internals.AsyncKafkaConsumer;
+import org.apache.kafka.clients.consumer.internals.StreamsRebalanceData;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.common.utils.Exit;
 import org.apache.kafka.streams.KafkaStreams;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
+import org.apache.kafka.streams.errors.StreamsUncaughtExceptionHandler;
+import org.apache.kafka.streams.internals.ConsumerWrapper;
 import org.apache.kafka.streams.kstream.KGroupedStream;
 import org.apache.kafka.streams.kstream.KStream;
 import org.apache.kafka.streams.kstream.Materialized;
 import org.apache.kafka.streams.kstream.Produced;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -37,6 +46,8 @@ public class EosTestClient extends SmokeTestUtil {
     private final Properties properties;
     private final boolean withRepartitioning;
     private final AtomicBoolean notRunningCallbackReceived = new AtomicBoolean(false);
+    private static final List<CapturingConsumerWrapper> CAPTURING_CONSUMER_WRAPPERS = new ArrayList<>();
+    private int minGroupEpoch = 0;
 
     private KafkaStreams streams;
     private boolean uncaughtException;
@@ -45,6 +56,8 @@ public class EosTestClient extends SmokeTestUtil {
         super();
         this.properties = properties;
         this.withRepartitioning = withRepartitioning;
+        this.properties.put(StreamsConfig.InternalConfig.INTERNAL_CONSUMER_WRAPPER, CapturingConsumerWrapper.class);
+        CAPTURING_CONSUMER_WRAPPERS.clear();
     }
 
     private volatile boolean isRunning = true;
@@ -71,12 +84,13 @@ public class EosTestClient extends SmokeTestUtil {
                 uncaughtException = false;
 
                 streams = createKafkaStreams(properties);
-                streams.setUncaughtExceptionHandler((t, e) -> {
+                streams.setUncaughtExceptionHandler(e -> {
                     System.out.println(System.currentTimeMillis());
                     System.out.println("EOS-TEST-CLIENT-EXCEPTION");
                     e.printStackTrace();
                     System.out.flush();
                     uncaughtException = true;
+                    return StreamsUncaughtExceptionHandler.StreamThreadExceptionResponse.SHUTDOWN_CLIENT;
                 });
                 streams.setStateListener((newState, oldState) -> {
                     // don't remove this -- it's required test output
@@ -93,7 +107,8 @@ public class EosTestClient extends SmokeTestUtil {
                 streams.close(Duration.ofSeconds(60_000L));
                 streams = null;
             }
-            sleep(1000);
+            logGroupEpochBump();
+            sleep(100);
         }
     }
 
@@ -101,9 +116,11 @@ public class EosTestClient extends SmokeTestUtil {
         props.put(StreamsConfig.APPLICATION_ID_CONFIG, APP_ID);
         props.put(StreamsConfig.NUM_STREAM_THREADS_CONFIG, 1);
         props.put(StreamsConfig.NUM_STANDBY_REPLICAS_CONFIG, 2);
+        props.put(StreamsConfig.PROBING_REBALANCE_INTERVAL_MS_CONFIG, Duration.ofMinutes(1).toMillis());
+        props.put(StreamsConfig.MAX_WARMUP_REPLICAS_CONFIG, Integer.MAX_VALUE);
         props.put(StreamsConfig.REPLICATION_FACTOR_CONFIG, 3);
-        props.put(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, 0);
-        props.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 5000); // increase commit interval to make sure a client is killed having an open transaction
+        props.put(StreamsConfig.STATESTORE_CACHE_MAX_BYTES_CONFIG, 0);
+        props.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 5000L); // increase commit interval to make sure a client is killed having an open transaction
         props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
         props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.Integer().getClass());
 
@@ -168,4 +185,41 @@ public class EosTestClient extends SmokeTestUtil {
             System.err.flush();
         }
     }
+
+    // Used in the streams group protocol
+    // Detect a completed rebalance by checking if the group epoch has been bumped for all threads.
+    private void logGroupEpochBump() {
+        int currentMin = Integer.MAX_VALUE;
+        for (final CapturingConsumerWrapper consumer : CAPTURING_CONSUMER_WRAPPERS) {
+            final int groupEpoch = consumer.lastSeenGroupEpoch;
+            if (groupEpoch < currentMin) {
+                currentMin = groupEpoch;
+            }
+        }
+        if (currentMin > minGroupEpoch) {
+            System.out.println("MemberEpochBump");
+        }
+        if (currentMin != Integer.MAX_VALUE) {
+            minGroupEpoch = currentMin;
+        }
+    }
+
+    public static class CapturingConsumerWrapper extends ConsumerWrapper {
+
+        public volatile int lastSeenGroupEpoch = 0;
+
+        @Override
+        public void wrapConsumer(final AsyncKafkaConsumer<byte[], byte[]> delegate, final Map<String, Object> config, final Optional<StreamsRebalanceData> streamsRebalanceData) {
+            CAPTURING_CONSUMER_WRAPPERS.add(this);
+            super.wrapConsumer(delegate, config, streamsRebalanceData);
+        }
+
+        @Override
+        public ConsumerGroupMetadata groupMetadata() {
+            final ConsumerGroupMetadata consumerGroupMetadata = delegate.groupMetadata();
+            lastSeenGroupEpoch = consumerGroupMetadata.generationId();
+            return consumerGroupMetadata;
+        }
+    }
+
 }

@@ -17,15 +17,14 @@
 package kafka.server
 
 import java.util
-
 import java.util.concurrent.atomic.AtomicReference
-
 import kafka.utils.{CoreUtils, TestUtils}
-import kafka.zk.ZooKeeperTestHarness
 import org.apache.kafka.common.metrics.{KafkaMetric, MetricsContext, MetricsReporter}
-import org.junit.Assert.{assertEquals}
-import org.junit.{After, Before, Test}
-import org.junit.Assert._
+import org.apache.kafka.server.config.ServerConfigs
+import org.apache.kafka.server.metrics.MetricConfigs
+import org.apache.kafka.test.{TestUtils => JTestUtils}
+import org.junit.jupiter.api.{AfterEach, BeforeEach, Test, TestInfo}
+import org.junit.jupiter.api.Assertions._
 
 
 object KafkaMetricsReporterTest {
@@ -43,52 +42,53 @@ object KafkaMetricsReporterTest {
     override def contextChange(metricsContext: MetricsContext): Unit = {
       //read jmxPrefix
 
-      MockMetricsReporter.JMXPREFIX.set(metricsContext.contextLabels().get("_namespace").toString)
-      MockMetricsReporter.CLUSTERID.set(metricsContext.contextLabels().get("kafka.cluster.id").toString)
-      MockMetricsReporter.BROKERID.set(metricsContext.contextLabels().get("kafka.broker.id").toString)
+      MockMetricsReporter.JMXPREFIX.set(contextLabelOrNull("_namespace", metricsContext))
+      MockMetricsReporter.CLUSTERID.set(contextLabelOrNull("kafka.cluster.id", metricsContext))
+      MockMetricsReporter.NODEID.set(contextLabelOrNull("kafka.node.id", metricsContext))
+    }
+
+    private def contextLabelOrNull(name: String, metricsContext: MetricsContext): String = {
+      Option(metricsContext.contextLabels().get(name)).flatMap(v => Option(v)).orNull
     }
 
     override def configure(configs: util.Map[String, _]): Unit = {}
-
   }
 
   object MockMetricsReporter {
     val JMXPREFIX: AtomicReference[String] = new AtomicReference[String]
-    val BROKERID : AtomicReference[String] = new AtomicReference[String]
+    val NODEID : AtomicReference[String] = new AtomicReference[String]
     val CLUSTERID : AtomicReference[String] = new AtomicReference[String]
   }
 }
 
-class KafkaMetricsReporterTest extends ZooKeeperTestHarness {
-  var server: KafkaServerStartable = null
-  var config: KafkaConfig = null
+class KafkaMetricsReporterTest extends QuorumTestHarness {
+  var broker: KafkaBroker = _
+  var config: KafkaConfig = _
 
-  @Before
-  override def setUp(): Unit = {
-    super.setUp()
-    val props = TestUtils.createBrokerConfig(1, zkConnect)
-    props.setProperty(KafkaConfig.MetricReporterClassesProp, "kafka.server.KafkaMetricsReporterTest$MockMetricsReporter")
-    props.setProperty(KafkaConfig.BrokerIdGenerationEnableProp, "true")
-    props.setProperty(KafkaConfig.BrokerIdProp, "-1")
+  @BeforeEach
+  override def setUp(testInfo: TestInfo): Unit = {
+    super.setUp(testInfo)
+    val props = TestUtils.createBrokerConfig(1)
+    props.setProperty(MetricConfigs.METRIC_REPORTER_CLASSES_CONFIG, "kafka.server.KafkaMetricsReporterTest$MockMetricsReporter")
+    props.setProperty(ServerConfigs.BROKER_ID_CONFIG, "1")
     config = KafkaConfig.fromProps(props)
-    server = KafkaServerStartable.fromProps(props, threadNamePrefix = Option(this.getClass.getName))
-    server.startup()
+    broker = createBroker(config, threadNamePrefix = Option(this.getClass.getName))
+    broker.startup()
   }
 
   @Test
   def testMetricsContextNamespacePresent(): Unit = {
-    assertNotNull(KafkaMetricsReporterTest.MockMetricsReporter.CLUSTERID)
-    assertNotNull(KafkaMetricsReporterTest.MockMetricsReporter.BROKERID)
-    assertNotNull(KafkaMetricsReporterTest.MockMetricsReporter.JMXPREFIX)
-    assertEquals("kafka.server", KafkaMetricsReporterTest.MockMetricsReporter.JMXPREFIX.get())
+    assertNotNull(KafkaMetricsReporterTest.MockMetricsReporter.CLUSTERID.get())
+    assertNotNull(KafkaMetricsReporterTest.MockMetricsReporter.NODEID.get())
+    assertNotNull(KafkaMetricsReporterTest.MockMetricsReporter.JMXPREFIX.get())
 
-    server.shutdown()
-    TestUtils.assertNoNonDaemonThreads(this.getClass.getName)
+    broker.shutdown()
+    JTestUtils.assertNoLeakedThreadsWithNameAndDaemonStatus(this.getClass.getName, true)
   }
 
-  @After
+  @AfterEach
   override def tearDown(): Unit = {
-    server.shutdown()
+    broker.shutdown()
     CoreUtils.delete(config.logDirs)
     super.tearDown()
   }

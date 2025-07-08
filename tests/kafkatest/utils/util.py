@@ -1,5 +1,3 @@
-# Copyright 2015 Confluent Inc.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -14,9 +12,7 @@
 
 from kafkatest import __version__ as __kafkatest_version__
 
-import math
 import re
-import time
 
 
 def kafkatest_version():
@@ -62,7 +58,7 @@ def is_version(node, version_list, proc_grep_string="kafka", logger=None):
     A useful tool to aid in checking that service version apis are working correctly.
     """
     lines = [l for l in node.account.ssh_capture("ps ax | grep %s | grep -v grep" % proc_grep_string)]
-    assert len(lines) == 1
+    assert len(lines) == 1, "lines: %s" % lines
     psLine = lines[0]
 
     versions = _kafka_jar_versions(psLine)

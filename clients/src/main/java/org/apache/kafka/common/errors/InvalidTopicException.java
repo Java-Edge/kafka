@@ -27,7 +27,7 @@ import java.util.Set;
  *
  * @see UnknownTopicOrPartitionException
  */
-public class InvalidTopicException extends ApiException {
+public class InvalidTopicException extends InvalidConfigurationException {
     private static final long serialVersionUID = 1L;
 
     private final Set<String> invalidTopics;
@@ -54,6 +54,11 @@ public class InvalidTopicException extends ApiException {
 
     public InvalidTopicException(Set<String> invalidTopics) {
         super("Invalid topics: " + invalidTopics);
+        this.invalidTopics = invalidTopics;
+    }
+
+    public InvalidTopicException(String message, Set<String> invalidTopics) {
+        super(message);
         this.invalidTopics = invalidTopics;
     }
 

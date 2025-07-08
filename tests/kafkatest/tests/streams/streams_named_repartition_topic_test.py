@@ -13,11 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from ducktape.mark import matrix
+from ducktape.mark.resource import cluster
 from ducktape.tests.test import Test
-from kafkatest.services.kafka import KafkaService
+from kafkatest.services.kafka import KafkaService, quorum
 from kafkatest.services.streams import StreamsNamedRepartitionTopicService
 from kafkatest.services.verifiable_producer import VerifiableProducer
-from kafkatest.services.zookeeper import ZookeeperService
 from kafkatest.tests.streams.utils import verify_stopped, stop_processors, verify_running
 
 class StreamsNamedRepartitionTopicTest(Test):
@@ -39,9 +40,8 @@ class StreamsNamedRepartitionTopicTest(Test):
             self.aggregation_topic: {'partitions': 6}
         }
 
-        self.zookeeper = ZookeeperService(self.test_context, num_nodes=1)
         self.kafka = KafkaService(self.test_context, num_nodes=3,
-                                  zk=self.zookeeper, topics=self.topics)
+                                  zk=None, topics=self.topics, controller_num_nodes_override=1)
 
         self.producer = VerifiableProducer(self.test_context,
                                            1,
@@ -50,8 +50,9 @@ class StreamsNamedRepartitionTopicTest(Test):
                                            throughput=1000,
                                            acks=1)
 
-    def test_upgrade_topology_with_named_repartition_topic(self):
-        self.zookeeper.start()
+    @cluster(num_nodes=8)
+    @matrix(metadata_quorum=[quorum.combined_kraft])
+    def test_upgrade_topology_with_named_repartition_topic(self, metadata_quorum):
         self.kafka.start()
 
         processor1 = StreamsNamedRepartitionTopicService(self.test_context, self.kafka)
@@ -82,7 +83,6 @@ class StreamsNamedRepartitionTopicTest(Test):
 
         self.producer.stop()
         self.kafka.stop()
-        self.zookeeper.stop()
 
     def verify_processing(self, processors):
         for processor in processors:

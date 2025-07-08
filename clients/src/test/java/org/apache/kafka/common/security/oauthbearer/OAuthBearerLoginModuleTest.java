@@ -16,13 +16,12 @@
  */
 package org.apache.kafka.common.security.oauthbearer;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertNotNull;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verifyNoInteractions;
+import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.security.auth.AuthenticateCallbackHandler;
+import org.apache.kafka.common.security.auth.SaslExtensions;
+import org.apache.kafka.common.security.auth.SaslExtensionsCallback;
+
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.Collections;
@@ -38,11 +37,13 @@ import javax.security.auth.callback.UnsupportedCallbackException;
 import javax.security.auth.login.AppConfigurationEntry;
 import javax.security.auth.login.LoginException;
 
-import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.security.auth.AuthenticateCallbackHandler;
-import org.apache.kafka.common.security.auth.SaslExtensionsCallback;
-import org.apache.kafka.common.security.auth.SaslExtensions;
-import org.junit.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 public class OAuthBearerLoginModuleTest {
 
@@ -127,8 +128,8 @@ public class OAuthBearerLoginModuleTest {
         // Create callback handler
         OAuthBearerToken[] tokens = new OAuthBearerToken[] {mock(OAuthBearerToken.class),
             mock(OAuthBearerToken.class), mock(OAuthBearerToken.class)};
-        SaslExtensions[] extensions = new SaslExtensions[] {mock(SaslExtensions.class),
-            mock(SaslExtensions.class), mock(SaslExtensions.class)};
+        SaslExtensions[] extensions = new SaslExtensions[] {saslExtensions(),
+            saslExtensions(), saslExtensions()};
         TestCallbackHandler testTokenCallbackHandler = new TestCallbackHandler(tokens, extensions);
 
         // Create login modules
@@ -208,7 +209,6 @@ public class OAuthBearerLoginModuleTest {
         assertSame(extensions[2], publicCredentials.iterator().next());
 
         verifyNoInteractions((Object[]) tokens);
-        verifyNoInteractions((Object[]) extensions);
     }
 
     @Test
@@ -224,8 +224,8 @@ public class OAuthBearerLoginModuleTest {
         // Create callback handler
         OAuthBearerToken[] tokens = new OAuthBearerToken[] {mock(OAuthBearerToken.class),
             mock(OAuthBearerToken.class)};
-        SaslExtensions[] extensions = new SaslExtensions[] {mock(SaslExtensions.class),
-            mock(SaslExtensions.class)};
+        SaslExtensions[] extensions = new SaslExtensions[] {saslExtensions(),
+            saslExtensions()};
         TestCallbackHandler testTokenCallbackHandler = new TestCallbackHandler(tokens, extensions);
 
         // Create login modules
@@ -270,7 +270,6 @@ public class OAuthBearerLoginModuleTest {
         assertEquals(0, publicCredentials.size());
 
         verifyNoInteractions((Object[]) tokens);
-        verifyNoInteractions((Object[]) extensions);
     }
 
     @Test
@@ -285,8 +284,8 @@ public class OAuthBearerLoginModuleTest {
         // Create callback handler
         OAuthBearerToken[] tokens = new OAuthBearerToken[] {mock(OAuthBearerToken.class),
             mock(OAuthBearerToken.class)};
-        SaslExtensions[] extensions = new SaslExtensions[] {mock(SaslExtensions.class),
-            mock(SaslExtensions.class)};
+        SaslExtensions[] extensions = new SaslExtensions[] {saslExtensions(),
+            saslExtensions()};
         TestCallbackHandler testTokenCallbackHandler = new TestCallbackHandler(tokens, extensions);
 
         // Create login module
@@ -322,7 +321,6 @@ public class OAuthBearerLoginModuleTest {
         assertEquals(0, publicCredentials.size());
 
         verifyNoInteractions((Object[]) tokens);
-        verifyNoInteractions((Object[]) extensions);
     }
 
     @Test
@@ -338,8 +336,8 @@ public class OAuthBearerLoginModuleTest {
         // Create callback handler
         OAuthBearerToken[] tokens = new OAuthBearerToken[] {mock(OAuthBearerToken.class),
             mock(OAuthBearerToken.class), mock(OAuthBearerToken.class)};
-        SaslExtensions[] extensions = new SaslExtensions[] {mock(SaslExtensions.class),
-            mock(SaslExtensions.class), mock(SaslExtensions.class)};
+        SaslExtensions[] extensions = new SaslExtensions[] {saslExtensions(), saslExtensions(),
+            saslExtensions()};
         TestCallbackHandler testTokenCallbackHandler = new TestCallbackHandler(tokens, extensions);
 
         // Create login modules
@@ -406,7 +404,6 @@ public class OAuthBearerLoginModuleTest {
         assertSame(extensions[2], publicCredentials.iterator().next());
 
         verifyNoInteractions((Object[]) tokens);
-        verifyNoInteractions((Object[]) extensions);
     }
 
     /**
@@ -435,5 +432,22 @@ public class OAuthBearerLoginModuleTest {
         assertTrue(extensions.map().isEmpty());
 
         verifyNoInteractions((Object[]) tokens);
+    }
+
+    /**
+     * We don't want to use mocks for our tests as we need to make sure to test
+     * {@link SaslExtensions}' {@link SaslExtensions#equals(Object)} and
+     * {@link SaslExtensions#hashCode()} methods.
+     *
+     * <p/>
+     *
+     * We need to make distinct calls to this method (vs. caching the result and reusing it
+     * multiple times) because we need to ensure the {@link SaslExtensions} instances are unique.
+     * This properly mimics the behavior that is used during the token refresh logic.
+     *
+     * @return Unique, newly-created {@link SaslExtensions} instance
+     */
+    private SaslExtensions saslExtensions() {
+        return SaslExtensions.empty();
     }
 }

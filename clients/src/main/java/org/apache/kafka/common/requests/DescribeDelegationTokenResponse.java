@@ -21,12 +21,11 @@ import org.apache.kafka.common.message.DescribeDelegationTokenResponseData.Descr
 import org.apache.kafka.common.message.DescribeDelegationTokenResponseData.DescribedDelegationTokenRenewer;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 import org.apache.kafka.common.security.auth.KafkaPrincipal;
 import org.apache.kafka.common.security.token.delegation.DelegationToken;
 import org.apache.kafka.common.security.token.delegation.TokenInformation;
 
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -36,21 +35,29 @@ public class DescribeDelegationTokenResponse extends AbstractResponse {
 
     private final DescribeDelegationTokenResponseData data;
 
-    public DescribeDelegationTokenResponse(int throttleTimeMs, Errors error, List<DelegationToken> tokens) {
+    public DescribeDelegationTokenResponse(int version, int throttleTimeMs, Errors error, List<DelegationToken> tokens) {
+        super(ApiKeys.DESCRIBE_DELEGATION_TOKEN);
         List<DescribedDelegationToken> describedDelegationTokenList = tokens
             .stream()
-            .map(dt -> new DescribedDelegationToken()
-                .setTokenId(dt.tokenInfo().tokenId())
-                .setPrincipalType(dt.tokenInfo().owner().getPrincipalType())
-                .setPrincipalName(dt.tokenInfo().owner().getName())
-                .setIssueTimestamp(dt.tokenInfo().issueTimestamp())
-                .setMaxTimestamp(dt.tokenInfo().maxTimestamp())
-                .setExpiryTimestamp(dt.tokenInfo().expiryTimestamp())
-                .setHmac(dt.hmac())
-                .setRenewers(dt.tokenInfo().renewers()
-                    .stream()
-                    .map(r -> new DescribedDelegationTokenRenewer().setPrincipalName(r.getName()).setPrincipalType(r.getPrincipalType()))
-                    .collect(Collectors.toList())))
+            .map(dt -> {
+                DescribedDelegationToken ddt = new DescribedDelegationToken()
+                    .setTokenId(dt.tokenInfo().tokenId())
+                    .setPrincipalType(dt.tokenInfo().owner().getPrincipalType())
+                    .setPrincipalName(dt.tokenInfo().owner().getName())
+                    .setIssueTimestamp(dt.tokenInfo().issueTimestamp())
+                    .setMaxTimestamp(dt.tokenInfo().maxTimestamp())
+                    .setExpiryTimestamp(dt.tokenInfo().expiryTimestamp())
+                    .setHmac(dt.hmac())
+                    .setRenewers(dt.tokenInfo().renewers()
+                        .stream()
+                        .map(r -> new DescribedDelegationTokenRenewer().setPrincipalName(r.getName()).setPrincipalType(r.getPrincipalType()))
+                        .collect(Collectors.toList()));
+                if (version > 2) {
+                    ddt.setTokenRequesterPrincipalType(dt.tokenInfo().tokenRequester().getPrincipalType())
+                        .setTokenRequesterPrincipalName(dt.tokenInfo().tokenRequester().getName());
+                }
+                return ddt;
+            })
             .collect(Collectors.toList());
 
         this.data = new DescribeDelegationTokenResponseData()
@@ -59,16 +66,18 @@ public class DescribeDelegationTokenResponse extends AbstractResponse {
             .setTokens(describedDelegationTokenList);
     }
 
-    public DescribeDelegationTokenResponse(int throttleTimeMs, Errors error) {
-        this(throttleTimeMs, error, new ArrayList<>());
+    public DescribeDelegationTokenResponse(int version, int throttleTimeMs, Errors error) {
+        this(version, throttleTimeMs, error, new ArrayList<>());
     }
 
-    public DescribeDelegationTokenResponse(Struct struct, short version) {
-        this.data = new DescribeDelegationTokenResponseData(struct, version);
+    public DescribeDelegationTokenResponse(DescribeDelegationTokenResponseData data) {
+        super(ApiKeys.DESCRIBE_DELEGATION_TOKEN);
+        this.data = data;
     }
 
-    public static DescribeDelegationTokenResponse parse(ByteBuffer buffer, short version) {
-        return new DescribeDelegationTokenResponse(ApiKeys.DESCRIBE_DELEGATION_TOKEN.responseSchema(version).read(buffer), version);
+    public static DescribeDelegationTokenResponse parse(Readable readable, short version) {
+        return new DescribeDelegationTokenResponse(new DescribeDelegationTokenResponseData(
+            readable, version));
     }
 
     @Override
@@ -77,13 +86,18 @@ public class DescribeDelegationTokenResponse extends AbstractResponse {
     }
 
     @Override
-    protected Struct toStruct(short version) {
-        return data.toStruct(version);
+    public DescribeDelegationTokenResponseData data() {
+        return data;
     }
 
     @Override
     public int throttleTimeMs() {
         return data.throttleTimeMs();
+    }
+
+    @Override
+    public void maybeSetThrottleTimeMs(int throttleTimeMs) {
+        data.setThrottleTimeMs(throttleTimeMs);
     }
 
     public Errors error() {
@@ -96,6 +110,7 @@ public class DescribeDelegationTokenResponse extends AbstractResponse {
             .map(ddt -> new DelegationToken(new TokenInformation(
                 ddt.tokenId(),
                 new KafkaPrincipal(ddt.principalType(), ddt.principalName()),
+                new KafkaPrincipal(ddt.tokenRequesterPrincipalType(), ddt.tokenRequesterPrincipalName()),
                 ddt.renewers()
                     .stream()
                     .map(ddtr -> new KafkaPrincipal(ddtr.principalType(), ddtr.principalName()))

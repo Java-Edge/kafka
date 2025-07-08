@@ -24,12 +24,10 @@ import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.message.DescribeAclsRequestData;
 import org.apache.kafka.common.message.DescribeAclsResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 import org.apache.kafka.common.resource.PatternType;
 import org.apache.kafka.common.resource.ResourcePatternFilter;
 import org.apache.kafka.common.resource.ResourceType;
-
-import java.nio.ByteBuffer;
 
 public class DescribeAclsRequest extends AbstractRequest {
 
@@ -89,18 +87,9 @@ public class DescribeAclsRequest extends AbstractRequest {
         }
     }
 
-    public DescribeAclsRequest(Struct struct, short version) {
-        super(ApiKeys.DESCRIBE_ACLS, version);
-        this.data = new DescribeAclsRequestData(struct, version);
-    }
-
+    @Override
     public DescribeAclsRequestData data() {
         return data;
-    }
-
-    @Override
-    protected Struct toStruct() {
-        return data.toStruct(version());
     }
 
     @Override
@@ -110,11 +99,11 @@ public class DescribeAclsRequest extends AbstractRequest {
             .setThrottleTimeMs(throttleTimeMs)
             .setErrorCode(error.error().code())
             .setErrorMessage(error.message());
-        return new DescribeAclsResponse(response);
+        return new DescribeAclsResponse(response, version());
     }
 
-    public static DescribeAclsRequest parse(ByteBuffer buffer, short version) {
-        return new DescribeAclsRequest(ApiKeys.DESCRIBE_ACLS.parseRequest(version, buffer), version);
+    public static DescribeAclsRequest parse(Readable readable, short version) {
+        return new DescribeAclsRequest(new DescribeAclsRequestData(readable, version), version);
     }
 
     public AclBindingFilter filter() {

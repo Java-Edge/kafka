@@ -17,47 +17,42 @@
 
 package kafka.server
 
-import java.util
+import kafka.cluster.Partition
+import kafka.server.ReplicaAlterLogDirsThread.{PromotionState, ReassignmentState}
+import org.apache.kafka.common.{TopicPartition, Uuid}
+import org.apache.kafka.common.requests.FetchResponse
+import org.apache.kafka.server.common.{DirectoryEventHandler, OffsetAndEpoch, TopicIdPartition}
+import org.apache.kafka.storage.internals.log.{LogAppendInfo, LogStartOffsetIncrementReason}
+import org.apache.kafka.storage.log.metrics.BrokerTopicStats
+import org.apache.kafka.server.LeaderEndPoint
+import org.apache.kafka.server.PartitionFetchState
+
 import java.util.Optional
-
-import kafka.api.Request
-import kafka.cluster.BrokerEndPoint
-import kafka.log.{LeaderOffsetIncremented, LogAppendInfo}
-import kafka.server.AbstractFetcherThread.ReplicaFetch
-import kafka.server.AbstractFetcherThread.ResultWithPartitions
-import kafka.server.QuotaFactory.UnboundedQuota
-import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.errors.KafkaStorageException
-import org.apache.kafka.common.protocol.{ApiKeys, Errors}
-import org.apache.kafka.common.record.Records
-import org.apache.kafka.common.requests.EpochEndOffset._
-import org.apache.kafka.common.requests.FetchResponse.PartitionData
-import org.apache.kafka.common.requests.{EpochEndOffset, FetchRequest, FetchResponse}
-
-import scala.jdk.CollectionConverters._
-import scala.collection.{Map, Seq, Set, mutable}
+import java.util.concurrent.ConcurrentHashMap
+import scala.collection.{Map, Set}
 
 class ReplicaAlterLogDirsThread(name: String,
-                                sourceBroker: BrokerEndPoint,
-                                brokerConfig: KafkaConfig,
+                                leader: LeaderEndPoint,
                                 failedPartitions: FailedPartitions,
                                 replicaMgr: ReplicaManager,
                                 quota: ReplicationQuotaManager,
-                                brokerTopicStats: BrokerTopicStats)
+                                brokerTopicStats: BrokerTopicStats,
+                                fetchBackOffMs: Int,
+                                directoryEventHandler: DirectoryEventHandler = DirectoryEventHandler.NOOP,
+                               )
   extends AbstractFetcherThread(name = name,
                                 clientId = name,
-                                sourceBroker = sourceBroker,
+                                leader = leader,
                                 failedPartitions,
-                                fetchBackOffMs = brokerConfig.replicaFetchBackoffMs,
+                                fetchTierStateMachine = new TierStateMachine(leader, replicaMgr, true),
+                                fetchBackOffMs = fetchBackOffMs,
                                 isInterruptible = false,
                                 brokerTopicStats) {
 
-  private val replicaId = brokerConfig.brokerId
-  private val maxBytes = brokerConfig.replicaFetchResponseMaxBytes
-  private val fetchSize = brokerConfig.replicaFetchMaxBytes
-  private var inProgressPartition: Option[TopicPartition] = None
+  // Visible for testing
+  private[server] val promotionStates: ConcurrentHashMap[TopicPartition, PromotionState] = new ConcurrentHashMap()
 
-  override protected def latestEpoch(topicPartition: TopicPartition): Option[Int] = {
+  override protected def latestEpoch(topicPartition: TopicPartition): Optional[Integer] = {
     replicaMgr.futureLocalLogOrException(topicPartition).latestEpoch
   }
 
@@ -69,69 +64,97 @@ class ReplicaAlterLogDirsThread(name: String,
     replicaMgr.futureLocalLogOrException(topicPartition).logEndOffset
   }
 
-  override protected def endOffsetForEpoch(topicPartition: TopicPartition, epoch: Int): Option[OffsetAndEpoch] = {
+  override protected def endOffsetForEpoch(topicPartition: TopicPartition, epoch: Int): Optional[OffsetAndEpoch] = {
     replicaMgr.futureLocalLogOrException(topicPartition).endOffsetForEpoch(epoch)
   }
 
-  def fetchFromLeader(fetchRequest: FetchRequest.Builder): Map[TopicPartition, FetchData] = {
-    var partitionData: Seq[(TopicPartition, FetchResponse.PartitionData[Records])] = null
-    val request = fetchRequest.build()
-
-    def processResponseCallback(responsePartitionData: Seq[(TopicPartition, FetchPartitionData)]): Unit = {
-      partitionData = responsePartitionData.map { case (tp, data) =>
-        val abortedTransactions = data.abortedTransactions.map(_.asJava).orNull
-        val lastStableOffset = data.lastStableOffset.getOrElse(FetchResponse.INVALID_LAST_STABLE_OFFSET)
-        tp -> new FetchResponse.PartitionData(data.error, data.highWatermark, lastStableOffset,
-          data.logStartOffset, abortedTransactions, data.records)
-      }
-    }
-
-    replicaMgr.fetchMessages(
-      0L, // timeout is 0 so that the callback will be executed immediately
-      Request.FutureLocalReplicaId,
-      request.minBytes,
-      request.maxBytes,
-      false,
-      request.fetchData.asScala.toSeq,
-      UnboundedQuota,
-      processResponseCallback,
-      request.isolationLevel,
-      None)
-
-    if (partitionData == null)
-      throw new IllegalStateException(s"Failed to fetch data for partitions ${request.fetchData.keySet().toArray.mkString(",")}")
-
-    partitionData.toMap
-  }
-
   // process fetched data
-  override def processPartitionData(topicPartition: TopicPartition,
-                                    fetchOffset: Long,
-                                    partitionData: PartitionData[Records]): Option[LogAppendInfo] = {
-    val partition = replicaMgr.nonOfflinePartition(topicPartition).get
+  override def processPartitionData(
+    topicPartition: TopicPartition,
+    fetchOffset: Long,
+    partitionLeaderEpoch: Int,
+    partitionData: FetchData
+  ): Option[LogAppendInfo] = {
+    val partition = replicaMgr.getPartitionOrException(topicPartition)
     val futureLog = partition.futureLocalLogOrException
-    val records = toMemoryRecords(partitionData.records)
+    val records = toMemoryRecords(FetchResponse.recordsOrFail(partitionData))
 
     if (fetchOffset != futureLog.logEndOffset)
       throw new IllegalStateException("Offset mismatch for the future replica %s: fetched offset = %d, log end offset = %d.".format(
         topicPartition, fetchOffset, futureLog.logEndOffset))
 
     val logAppendInfo = if (records.sizeInBytes() > 0)
-      partition.appendRecordsToFollowerOrFutureReplica(records, isFuture = true)
+      partition.appendRecordsToFollowerOrFutureReplica(records, isFuture = true, partitionLeaderEpoch)
     else
       None
 
     futureLog.updateHighWatermark(partitionData.highWatermark)
-    futureLog.maybeIncrementLogStartOffset(partitionData.logStartOffset, LeaderOffsetIncremented)
+    futureLog.maybeIncrementLogStartOffset(partitionData.logStartOffset, LogStartOffsetIncrementReason.LeaderOffsetIncremented)
 
-    if (partition.maybeReplaceCurrentWithFutureReplica())
-      removePartitions(Set(topicPartition))
+    directoryEventHandler match {
+      case DirectoryEventHandler.NOOP =>
+        if (partition.maybeReplaceCurrentWithFutureReplica())
+          removePartitions(Set(topicPartition))
+      case _ =>
+        maybePromoteFutureReplica(topicPartition, partition)
+    }
 
     quota.record(records.sizeInBytes)
     logAppendInfo
   }
 
-  override def addPartitions(initialFetchStates: Map[TopicPartition, OffsetAndEpoch]): Set[TopicPartition] = {
+  override def removePartitions(topicPartitions: Set[TopicPartition]): Map[TopicPartition, PartitionFetchState] = {
+    for (topicPartition <- topicPartitions) {
+      if (this.promotionStates.containsKey(topicPartition)) {
+        val PromotionState(reassignmentState, topicId, originalDir) = this.promotionStates.get(topicPartition)
+        // Revert any reassignments for partitions that did not complete the future replica promotion
+        if (originalDir.isDefined && topicId.isDefined && reassignmentState.maybeInconsistentMetadata) {
+          directoryEventHandler.handleAssignment(new TopicIdPartition(topicId.get, topicPartition.partition()), originalDir.get,
+            "Reverting reassignment for canceled future replica", () => ())
+        }
+        this.promotionStates.remove(topicPartition)
+      }
+    }
+
+    super.removePartitions(topicPartitions)
+  }
+
+  private def reassignmentState(topicPartition: TopicPartition): ReassignmentState = promotionStates.get(topicPartition).reassignmentState
+
+  // Visible for testing
+  private[server] def updateReassignmentState(topicPartition: TopicPartition, state: ReassignmentState): Unit = {
+    log.debug(s"Updating future replica $topicPartition reassignment state to $state")
+    promotionStates.put(topicPartition, promotionStates.get(topicPartition).withAssignment(state))
+  }
+
+  private def maybePromoteFutureReplica(topicPartition: TopicPartition, partition: Partition) = {
+    val topicId = partition.topicId
+    if (topicId.isEmpty)
+      throw new IllegalStateException(s"Topic ${topicPartition.topic()} does not have an ID.")
+
+    reassignmentState(topicPartition) match {
+      case ReassignmentState.None =>
+        // Schedule assignment request and don't promote the future replica yet until the controller has accepted the request.
+        partition.runCallbackIfFutureReplicaCaughtUp(_ => {
+          val targetDir = partition.futureReplicaDirectoryId().get
+          val topicIdPartition = new TopicIdPartition(topicId.get, topicPartition.partition())
+          directoryEventHandler.handleAssignment(topicIdPartition, targetDir, "Future replica promotion", () => updateReassignmentState(topicPartition, ReassignmentState.Accepted))
+          updateReassignmentState(topicPartition, ReassignmentState.Queued)
+        })
+      case ReassignmentState.Accepted =>
+        // Promote future replica if controller accepted the request and the replica caught-up with the original log.
+        if (partition.maybeReplaceCurrentWithFutureReplica()) {
+          updateReassignmentState(topicPartition, ReassignmentState.Effective)
+          removePartitions(Set(topicPartition))
+        }
+      case ReassignmentState.Queued =>
+        log.trace("Waiting for AssignReplicasToDirsRequest to succeed before promoting the future replica.")
+      case ReassignmentState.Effective =>
+        throw new IllegalStateException("BUG: trying to promote a future replica twice")
+    }
+  }
+
+  override def addPartitions(initialFetchStates: Map[TopicPartition, InitialFetchState]): Set[TopicPartition] = {
     partitionMapLock.lockInterruptibly()
     try {
       // It is possible that the log dir fetcher completed just before this call, so we
@@ -139,49 +162,18 @@ class ReplicaAlterLogDirsThread(name: String,
       val filteredFetchStates = initialFetchStates.filter { case (tp, _) =>
         replicaMgr.futureLogExists(tp)
       }
+      filteredFetchStates.foreach {
+        case (topicPartition, state) =>
+          val topicId = state.topicId
+          val currentDirectoryId = replicaMgr.getPartitionOrException(topicPartition).logDirectoryId()
+          val promotionState = PromotionState(ReassignmentState.None, topicId, currentDirectoryId)
+          promotionStates.put(topicPartition, promotionState)
+      }
       super.addPartitions(filteredFetchStates)
     } finally {
       partitionMapLock.unlock()
     }
   }
-
-  override protected def fetchEarliestOffsetFromLeader(topicPartition: TopicPartition, leaderEpoch: Int): Long = {
-    val partition = replicaMgr.getPartitionOrException(topicPartition)
-    partition.localLogOrException.logStartOffset
-  }
-
-  override protected def fetchLatestOffsetFromLeader(topicPartition: TopicPartition, leaderEpoch: Int): Long = {
-    val partition = replicaMgr.getPartitionOrException(topicPartition)
-    partition.localLogOrException.logEndOffset
-  }
-
-  /**
-   * Fetches offset for leader epoch from local replica for each given topic partitions
-   * @param partitions map of topic partition -> leader epoch of the future replica
-   * @return map of topic partition -> end offset for a requested leader epoch
-   */
-  override def fetchEpochEndOffsets(partitions: Map[TopicPartition, EpochData]): Map[TopicPartition, EpochEndOffset] = {
-    partitions.map { case (tp, epochData) =>
-      try {
-        val endOffset = if (epochData.leaderEpoch == UNDEFINED_EPOCH) {
-          new EpochEndOffset(UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET)
-        } else {
-          val partition = replicaMgr.getPartitionOrException(tp)
-          partition.lastOffsetForLeaderEpoch(
-            currentLeaderEpoch = epochData.currentLeaderEpoch,
-            leaderEpoch = epochData.leaderEpoch,
-            fetchOnlyFromLeader = false)
-        }
-        tp -> endOffset
-      } catch {
-        case t: Throwable =>
-          warn(s"Error when getting EpochEndOffset for $tp", t)
-          tp -> new EpochEndOffset(Errors.forException(t), UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET)
-      }
-    }
-  }
-
-  override protected def isOffsetForLeaderEpochSupported: Boolean = true
 
   /**
    * Truncate the log for each partition based on current replica's returned epoch and offset.
@@ -206,80 +198,54 @@ class ReplicaAlterLogDirsThread(name: String,
     val partition = replicaMgr.getPartitionOrException(topicPartition)
     partition.truncateFullyAndStartAt(offset, isFuture = true)
   }
-
-  private def nextReadyPartition(partitionMap: Map[TopicPartition, PartitionFetchState]): Option[(TopicPartition, PartitionFetchState)] = {
-    partitionMap.filter { case (_, partitionFetchState) =>
-      partitionFetchState.isReadyForFetch
-    }.reduceLeftOption { (left, right) =>
-      if ((left._1.topic < right._1.topic) || (left._1.topic == right._1.topic && left._1.partition < right._1.partition))
-        left
-      else
-        right
-    }
+}
+object ReplicaAlterLogDirsThread {
+  /**
+   * @param reassignmentState Tracks the state of the replica-to-directory assignment update in the metadata
+   * @param topicId           The ID of the topic, which is useful if a reverting the assignment is required
+   * @param currentDir        The original directory ID from which the future replica fetches from
+   */
+  case class PromotionState(reassignmentState: ReassignmentState, topicId: Option[Uuid], currentDir: Option[Uuid]) {
+    def withAssignment(newDirReassignmentState: ReassignmentState): PromotionState =
+      PromotionState(newDirReassignmentState, topicId, currentDir)
   }
 
-  private def selectPartitionToFetch(partitionMap: Map[TopicPartition, PartitionFetchState]): Option[(TopicPartition, PartitionFetchState)] = {
-    // Only move one partition at a time to increase its catch-up rate and thus reduce the time spent on
-    // moving any given replica. Replicas are selected in ascending order (lexicographically by topic) from the
-    // partitions that are ready to fetch. Once selected, we will continue fetching the same partition until it
-    // becomes unavailable or is removed.
-
-    inProgressPartition.foreach { tp =>
-      val fetchStateOpt = partitionMap.get(tp)
-      fetchStateOpt.filter(_.isReadyForFetch).foreach { fetchState =>
-        return Some((tp, fetchState))
-      }
-    }
-
-    inProgressPartition = None
-
-    val nextPartitionOpt = nextReadyPartition(partitionMap)
-    nextPartitionOpt.foreach { case (tp, fetchState) =>
-      inProgressPartition = Some(tp)
-      info(s"Beginning/resuming copy of partition $tp from offset ${fetchState.fetchOffset}. " +
-        s"Including this partition, there are ${partitionMap.size} remaining partitions to copy by this thread.")
-    }
-    nextPartitionOpt
+  /**
+   * Represents the state of the request to update the directory assignment from the current replica directory
+   * to the future replica directory.
+   */
+  sealed trait ReassignmentState {
+    /**
+     * @return true if the directory assignment in the cluster metadata may be inconsistent with the actual
+     *         directory where the main replica is hosted.
+     */
+    def maybeInconsistentMetadata: Boolean = false
   }
 
-  private def buildFetchForPartition(tp: TopicPartition, fetchState: PartitionFetchState): ResultWithPartitions[Option[ReplicaFetch]] = {
-    val requestMap = new util.LinkedHashMap[TopicPartition, FetchRequest.PartitionData]
-    val partitionsWithError = mutable.Set[TopicPartition]()
+  object ReassignmentState {
 
-    try {
-      val logStartOffset = replicaMgr.futureLocalLogOrException(tp).logStartOffset
-      requestMap.put(tp, new FetchRequest.PartitionData(fetchState.fetchOffset, logStartOffset,
-        fetchSize, Optional.of(fetchState.currentLeaderEpoch)))
-    } catch {
-      case e: KafkaStorageException =>
-        debug(s"Failed to build fetch for $tp", e)
-        partitionsWithError += tp
+    /**
+     * The request has not been created.
+     */
+    case object None extends ReassignmentState
+
+    /**
+     * The request has been queued, it may or may not yet have been sent to the Controller.
+     */
+    case object Queued extends ReassignmentState {
+      override def maybeInconsistentMetadata: Boolean = true
     }
 
-    val fetchRequestOpt = if (requestMap.isEmpty) {
-      None
-    } else {
-      // Set maxWait and minBytes to 0 because the response should return immediately if
-      // the future log has caught up with the current log of the partition
-      val requestBuilder = FetchRequest.Builder.forReplica(ApiKeys.FETCH.latestVersion, replicaId, 0, 0, requestMap).setMaxBytes(maxBytes)
-      Some(ReplicaFetch(requestMap, requestBuilder))
+    /**
+     * The controller has acknowledged the new directory assignment and persisted the change in metadata.
+     */
+    case object Accepted extends ReassignmentState {
+      override def maybeInconsistentMetadata: Boolean = true
     }
 
-    ResultWithPartitions(fetchRequestOpt, partitionsWithError)
+    /**
+     * The future replica has been promoted and replaced the current replica.
+     */
+    case object Effective extends ReassignmentState
   }
-
-  def buildFetch(partitionMap: Map[TopicPartition, PartitionFetchState]): ResultWithPartitions[Option[ReplicaFetch]] = {
-    // Only include replica in the fetch request if it is not throttled.
-    if (quota.isQuotaExceeded) {
-      ResultWithPartitions(None, Set.empty)
-    } else {
-      selectPartitionToFetch(partitionMap) match {
-        case Some((tp, fetchState)) =>
-          buildFetchForPartition(tp, fetchState)
-        case None =>
-          ResultWithPartitions(None, Set.empty)
-      }
-    }
-  }
-
 }

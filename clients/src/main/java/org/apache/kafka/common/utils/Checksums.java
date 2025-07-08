@@ -22,10 +22,6 @@ import java.util.zip.Checksum;
 /**
  * Utility methods for `Checksum` instances.
  *
- * Implementation note: we can add methods to our implementations of CRC32 and CRC32C, but we cannot do the same for
- * the Java implementations (we prefer the Java 9 implementation of CRC32C if available). A utility class is the
- * simplest way to add methods that are useful for all Checksum implementations.
- *
  * NOTE: This class is intended for INTERNAL usage only within Kafka.
  */
 public final class Checksums {
@@ -33,17 +29,41 @@ public final class Checksums {
     private Checksums() {
     }
 
+    /**
+     * Uses {@link Checksum#update} on {@code buffer}'s content, without modifying its position and limit.<br>
+     * This is semantically equivalent to {@link #update(Checksum, ByteBuffer, int, int)} with {@code offset = 0}.
+     */
     public static void update(Checksum checksum, ByteBuffer buffer, int length) {
         update(checksum, buffer, 0, length);
     }
 
+    /**
+     * Uses {@link Checksum#update} on {@code buffer}'s content, starting from the given {@code offset}
+     * by the provided {@code length}, without modifying its position and limit.
+     */
     public static void update(Checksum checksum, ByteBuffer buffer, int offset, int length) {
         if (buffer.hasArray()) {
             checksum.update(buffer.array(), buffer.position() + buffer.arrayOffset() + offset, length);
+        } else if (buffer.isDirect()) {
+            final int oldPosition = buffer.position();
+            final int oldLimit = buffer.limit();
+            try {
+                // save a slice to be used to save an allocation in the hot-path
+                final int start = oldPosition + offset;
+                buffer.limit(start + length);
+                buffer.position(start);
+                checksum.update(buffer);
+            } finally {
+                // reset buffer's offsets
+                buffer.limit(oldLimit);
+                buffer.position(oldPosition);
+            }
         } else {
+            // slow-path
             int start = buffer.position() + offset;
-            for (int i = start; i < start + length; i++)
+            for (int i = start; i < start + length; i++) {
                 checksum.update(buffer.get(i));
+            }
         }
     }
     

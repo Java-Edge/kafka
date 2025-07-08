@@ -24,9 +24,8 @@ import java.lang.{Iterable => JIterable}
 import org.apache.kafka.streams.processor.ProcessorContext
 
 /**
- * Implicit classes that offer conversions of Scala function literals to
- * SAM (Single Abstract Method) objects in Java. These make the Scala APIs much
- * more expressive, with less boilerplate and more succinct.
+ * Implicit classes that offer conversions of Scala function literals to SAM (Single Abstract Method) objects in Java.
+ * These make the Scala APIs much more expressive, with less boilerplate and more succinct.
  */
 private[scala] object FunctionsCompatConversions {
 
@@ -87,10 +86,16 @@ private[scala] object FunctionsCompatConversions {
     def asInitializer: Initializer[VA] = () => f()
   }
 
+  @deprecated(
+    since = "4.0.0"
+  )
   implicit class TransformerSupplierFromFunction[K, V, VO](val f: () => Transformer[K, V, VO]) extends AnyVal {
     def asTransformerSupplier: TransformerSupplier[K, V, VO] = () => f()
   }
 
+  @deprecated(
+    since = "4.0.0"
+  )
   implicit class TransformerSupplierAsJava[K, V, VO](val supplier: TransformerSupplier[K, V, Iterable[VO]])
       extends AnyVal {
     def asJava: TransformerSupplier[K, V, JIterable[VO]] = () => {
@@ -102,6 +107,10 @@ private[scala] object FunctionsCompatConversions {
       }
     }
   }
+
+  @deprecated(
+    since = "4.0.0"
+  )
   implicit class ValueTransformerSupplierAsJava[V, VO](val supplier: ValueTransformerSupplier[V, Iterable[VO]])
       extends AnyVal {
     def asJava: ValueTransformerSupplier[V, JIterable[VO]] = () => {
@@ -113,6 +122,10 @@ private[scala] object FunctionsCompatConversions {
       }
     }
   }
+
+  @deprecated(
+    since = "4.0.0"
+  )
   implicit class ValueTransformerSupplierWithKeyAsJava[K, V, VO](
     val supplier: ValueTransformerWithKeySupplier[K, V, Iterable[VO]]
   ) extends AnyVal {

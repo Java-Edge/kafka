@@ -16,8 +16,7 @@
  */
 package org.apache.kafka.common.security.token.delegation;
 
-import org.apache.kafka.common.annotation.InterfaceStability;
-
+import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Objects;
@@ -26,10 +25,9 @@ import java.util.Objects;
  * A class representing a delegation token.
  *
  */
-@InterfaceStability.Evolving
 public class DelegationToken {
-    private TokenInformation tokenInformation;
-    private byte[] hmac;
+    private final TokenInformation tokenInformation;
+    private final byte[] hmac;
 
     public DelegationToken(TokenInformation tokenInformation, byte[] hmac) {
         this.tokenInformation = tokenInformation;
@@ -59,7 +57,7 @@ public class DelegationToken {
 
         DelegationToken token = (DelegationToken) o;
 
-        return Objects.equals(tokenInformation, token.tokenInformation) && Arrays.equals(hmac, token.hmac);
+        return Objects.equals(tokenInformation, token.tokenInformation) && MessageDigest.isEqual(hmac, token.hmac);
     }
 
     @Override

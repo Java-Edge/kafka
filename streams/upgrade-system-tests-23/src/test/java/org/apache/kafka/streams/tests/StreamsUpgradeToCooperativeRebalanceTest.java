@@ -50,7 +50,7 @@ public class StreamsUpgradeToCooperativeRebalanceTest {
         config.put(StreamsConfig.APPLICATION_ID_CONFIG, "cooperative-rebalance-upgrade");
         config.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
         config.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
-        config.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 1000);
+        config.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 1000L);
         config.putAll(streamsProperties);
 
         final String sourceTopic = streamsProperties.getProperty("source.topic", "source");
@@ -68,7 +68,7 @@ public class StreamsUpgradeToCooperativeRebalanceTest {
                 @Override
                 public void apply(final String key, final String value) {
                     if (recordCounter++ % reportInterval == 0) {
-                        System.out.println(String.format("Processed %d records so far", recordCounter));
+                        System.out.printf("Processed %d records so far%n", recordCounter);
                         System.out.flush();
                     }
                 }

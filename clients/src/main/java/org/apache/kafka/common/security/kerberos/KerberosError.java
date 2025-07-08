@@ -19,11 +19,14 @@ package org.apache.kafka.common.security.kerberos;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.security.authenticator.SaslClientAuthenticator;
 import org.apache.kafka.common.utils.Java;
+
+import org.ietf.jgss.GSSException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.security.sasl.SaslClient;
 import java.lang.reflect.Method;
+
+import javax.security.sasl.SaslClient;
 
 /**
  * Kerberos exceptions that may require special handling. The standard Kerberos error codes
@@ -96,7 +99,7 @@ public enum KerberosError {
                 Integer errorCode = (Integer) KRB_EXCEPTION_RETURN_CODE_METHOD.invoke(cause);
                 return fromErrorCode(errorCode);
             } catch (Exception e) {
-                log.trace("Kerberos return code could not be determined from {} due to {}", exception, e);
+                log.trace("Kerberos return code could not be determined from {}", exception, e);
                 return null;
             }
         }
@@ -108,5 +111,23 @@ public enum KerberosError {
                 return error;
         }
         return null;
+    }
+
+    /**
+     * Returns true if the exception should be handled as a transient failure on clients.
+     * We handle GSSException.NO_CRED as retriable on the client-side since this may
+     * occur during re-login if a clients attempts to authentication after logout, but
+     * before the subsequent login.
+     */
+    public static boolean isRetriableClientGssException(Exception exception) {
+        Throwable cause = exception.getCause();
+        while (cause != null && !(cause instanceof GSSException)) {
+            cause = cause.getCause();
+        }
+        if (cause != null) {
+            GSSException gssException = (GSSException) cause;
+            return gssException.getMajor() == GSSException.NO_CRED;
+        }
+        return false;
     }
 }

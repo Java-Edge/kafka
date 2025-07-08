@@ -18,44 +18,54 @@ package org.apache.kafka.streams.processor.internals;
 
 import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.errors.InvalidTopicException;
-import org.junit.Test;
+
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class InternalTopicConfigTest {
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void shouldThrowNpeIfTopicConfigIsNull() {
-        new RepartitionTopicConfig("topic", null);
+        assertThrows(NullPointerException.class, () -> new RepartitionTopicConfig("topic", null));
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void shouldThrowIfNameIsNull() {
-        new RepartitionTopicConfig(null, Collections.emptyMap());
+        assertThrows(NullPointerException.class, () -> new RepartitionTopicConfig(null, Collections.emptyMap()));
     }
 
-    @Test(expected = InvalidTopicException.class)
+    @Test
     public void shouldThrowIfNameIsInvalid() {
-        new RepartitionTopicConfig("foo bar baz", Collections.emptyMap());
+        assertThrows(InvalidTopicException.class, () -> new RepartitionTopicConfig("foo bar baz", Collections.emptyMap()));
     }
 
     @Test
     public void shouldSetCreateTimeByDefaultForWindowedChangelog() {
-        final WindowedChangelogTopicConfig topicConfig = new WindowedChangelogTopicConfig("name", Collections.emptyMap());
+        final WindowedChangelogTopicConfig topicConfig = new WindowedChangelogTopicConfig("name", Collections.emptyMap(), 10);
 
-        final Map<String, String> properties = topicConfig.getProperties(Collections.emptyMap(), 0);
+        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
         assertEquals("CreateTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
     }
 
     @Test
-    public void shouldSetCreateTimeByDefaultForUnwindowedChangelog() {
-        final UnwindowedChangelogTopicConfig topicConfig = new UnwindowedChangelogTopicConfig("name", Collections.emptyMap());
+    public void shouldSetCreateTimeByDefaultForUnwindowedUnversionedChangelog() {
+        final UnwindowedUnversionedChangelogTopicConfig topicConfig = new UnwindowedUnversionedChangelogTopicConfig("name", Collections.emptyMap());
 
-        final Map<String, String> properties = topicConfig.getProperties(Collections.emptyMap(), 0);
+        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
+        assertEquals("CreateTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
+    }
+
+    @Test
+    public void shouldSetCreateTimeByDefaultForVersionedChangelog() {
+        final VersionedChangelogTopicConfig topicConfig = new VersionedChangelogTopicConfig("name", Collections.emptyMap(), 12);
+
+        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
         assertEquals("CreateTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
     }
 
@@ -63,15 +73,20 @@ public class InternalTopicConfigTest {
     public void shouldSetCreateTimeByDefaultForRepartitionTopic() {
         final RepartitionTopicConfig topicConfig = new RepartitionTopicConfig("name", Collections.emptyMap());
 
-        final Map<String, String> properties = topicConfig.getProperties(Collections.emptyMap(), 0);
+        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
         assertEquals("CreateTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
     }
 
     @Test
     public void shouldAugmentRetentionMsWithWindowedChangelog() {
-        final WindowedChangelogTopicConfig topicConfig = new WindowedChangelogTopicConfig("name", Collections.emptyMap());
-        topicConfig.setRetentionMs(10);
-        assertEquals("30", topicConfig.getProperties(Collections.emptyMap(), 20).get(TopicConfig.RETENTION_MS_CONFIG));
+        final WindowedChangelogTopicConfig topicConfig = new WindowedChangelogTopicConfig("name", Collections.emptyMap(), 10);
+        assertEquals("30", topicConfig.properties(Collections.emptyMap(), 20).get(TopicConfig.RETENTION_MS_CONFIG));
+    }
+
+    @Test
+    public void shouldAugmentCompactionLagMsWithVersionedChangelog() {
+        final VersionedChangelogTopicConfig topicConfig = new VersionedChangelogTopicConfig("name", Collections.emptyMap(), 12);
+        assertEquals(Long.toString(12 + 24 * 60 * 60 * 1000L), topicConfig.properties(Collections.emptyMap(), 20).get(TopicConfig.MIN_COMPACTION_LAG_MS_CONFIG));
     }
 
     @Test
@@ -79,22 +94,33 @@ public class InternalTopicConfigTest {
         final Map<String, String> configs = new HashMap<>();
         configs.put("message.timestamp.type", "LogAppendTime");
 
-        final WindowedChangelogTopicConfig topicConfig = new WindowedChangelogTopicConfig("name", configs);
+        final WindowedChangelogTopicConfig topicConfig = new WindowedChangelogTopicConfig("name", configs, 10);
 
-        final Map<String, String> properties = topicConfig.getProperties(Collections.emptyMap(), 0);
+        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
         assertEquals("LogAppendTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
     }
 
     @Test
-    public void shouldUseSuppliedConfigsForUnwindowedChangelogConfig() {
+    public void shouldUseSuppliedConfigsForVersionedChangelogConfig() {
+        final Map<String, String> configs = new HashMap<>();
+        configs.put("message.timestamp.type", "LogAppendTime");
+
+        final VersionedChangelogTopicConfig topicConfig = new VersionedChangelogTopicConfig("name", configs, 12);
+
+        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
+        assertEquals("LogAppendTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
+    }
+
+    @Test
+    public void shouldUseSuppliedConfigsForUnwindowedUnversionedChangelogConfig() {
         final Map<String, String> configs = new HashMap<>();
         configs.put("retention.ms", "1000");
         configs.put("retention.bytes", "10000");
         configs.put("message.timestamp.type", "LogAppendTime");
 
-        final UnwindowedChangelogTopicConfig topicConfig = new UnwindowedChangelogTopicConfig("name", configs);
+        final UnwindowedUnversionedChangelogTopicConfig topicConfig = new UnwindowedUnversionedChangelogTopicConfig("name", configs);
 
-        final Map<String, String> properties = topicConfig.getProperties(Collections.emptyMap(), 0);
+        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
         assertEquals("1000", properties.get(TopicConfig.RETENTION_MS_CONFIG));
         assertEquals("10000", properties.get(TopicConfig.RETENTION_BYTES_CONFIG));
         assertEquals("LogAppendTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
@@ -108,7 +134,7 @@ public class InternalTopicConfigTest {
 
         final RepartitionTopicConfig topicConfig = new RepartitionTopicConfig("name", configs);
 
-        final Map<String, String> properties = topicConfig.getProperties(Collections.emptyMap(), 0);
+        final Map<String, String> properties = topicConfig.properties(Collections.emptyMap(), 0);
         assertEquals("1000", properties.get(TopicConfig.RETENTION_MS_CONFIG));
         assertEquals("LogAppendTime", properties.get(TopicConfig.MESSAGE_TIMESTAMP_TYPE_CONFIG));
     }

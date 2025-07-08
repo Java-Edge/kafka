@@ -34,12 +34,12 @@ import org.apache.kafka.streams.KafkaStreams;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.errors.StreamsException;
+import org.apache.kafka.streams.errors.StreamsUncaughtExceptionHandler;
 import org.apache.kafka.streams.kstream.Grouped;
 
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Collections;
-import java.util.Locale;
 import java.util.Properties;
 
 public class BrokerCompatibilityTest {
@@ -68,10 +68,10 @@ public class BrokerCompatibilityTest {
 
         streamsProperties.put(StreamsConfig.APPLICATION_ID_CONFIG, "kafka-streams-system-test-broker-compatibility");
         streamsProperties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        streamsProperties.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
-        streamsProperties.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
-        streamsProperties.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 100);
-        streamsProperties.put(StreamsConfig.CACHE_MAX_BYTES_BUFFERING_CONFIG, 0);
+        streamsProperties.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.StringSerde.class);
+        streamsProperties.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.StringSerde.class);
+        streamsProperties.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 100L);
+        streamsProperties.put(StreamsConfig.STATESTORE_CACHE_MAX_BYTES_CONFIG, 0);
         streamsProperties.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG, processingMode);
         final int timeout = 6000;
         streamsProperties.put(StreamsConfig.consumerPrefix(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG), timeout);
@@ -88,7 +88,7 @@ public class BrokerCompatibilityTest {
             .to(SINK_TOPIC);
 
         final KafkaStreams streams = new KafkaStreams(builder.build(), streamsProperties);
-        streams.setUncaughtExceptionHandler((t, e) -> {
+        streams.setUncaughtExceptionHandler(e -> {
             Throwable cause = e;
             if (cause instanceof StreamsException) {
                 while (cause.getCause() != null) {
@@ -98,12 +98,12 @@ public class BrokerCompatibilityTest {
             System.err.println("FATAL: An unexpected exception " + cause);
             e.printStackTrace(System.err);
             System.err.flush();
-            streams.close(Duration.ofSeconds(30));
+            return StreamsUncaughtExceptionHandler.StreamThreadExceptionResponse.SHUTDOWN_CLIENT;
         });
         System.out.println("start Kafka Streams");
         streams.start();
 
-        final boolean eosEnabled = processingMode.startsWith(StreamsConfig.EXACTLY_ONCE);
+        final boolean eosEnabled = processingMode.equals("exactly_once_v2");
 
         System.out.println("send data");
         final Properties producerProperties = new Properties();
@@ -145,7 +145,7 @@ public class BrokerCompatibilityTest {
         consumerProperties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         consumerProperties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         if (eosEnabled) {
-            consumerProperties.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, IsolationLevel.READ_COMMITTED.name().toLowerCase(Locale.ROOT));
+            consumerProperties.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, IsolationLevel.READ_COMMITTED.toString());
         }
 
         try (final KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProperties)) {

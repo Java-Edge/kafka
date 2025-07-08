@@ -17,35 +17,49 @@
 package org.apache.kafka.common.record;
 
 import org.apache.kafka.common.InvalidRecordException;
-import org.junit.Test;
+import org.apache.kafka.common.message.EndTxnMarker;
+import org.apache.kafka.common.protocol.types.Field;
+import org.apache.kafka.common.protocol.types.Schema;
+import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.types.Type;
+import org.apache.kafka.common.utils.ByteUtils;
+
+import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
+import java.util.Arrays;
+import java.util.List;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class EndTransactionMarkerTest {
 
-    @Test(expected = IllegalArgumentException.class)
+    // Old hard-coded schema, used to validate old hard-coded schema format is exactly the same as new auto generated protocol format
+    private final Schema v0Schema = new Schema(
+            new Field("version", Type.INT16),
+            new Field("coordinator_epoch", Type.INT32));
+
+    private static final List<ControlRecordType> VALID_CONTROLLER_RECORD_TYPE = Arrays.asList(ControlRecordType.COMMIT, ControlRecordType.ABORT);
+
+    @Test
     public void testUnknownControlTypeNotAllowed() {
-        new EndTransactionMarker(ControlRecordType.UNKNOWN, 24);
+        assertThrows(IllegalArgumentException.class,
+            () -> new EndTransactionMarker(ControlRecordType.UNKNOWN, 24));
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void testCannotDeserializeUnknownControlType() {
-        EndTransactionMarker.deserializeValue(ControlRecordType.UNKNOWN, ByteBuffer.wrap(new byte[0]));
+        assertThrows(IllegalArgumentException.class,
+            () -> EndTransactionMarker.deserializeValue(ControlRecordType.UNKNOWN, ByteBuffer.wrap(new byte[0])));
     }
 
-    @Test(expected = InvalidRecordException.class)
-    public void testIllegalNegativeVersion() {
+    @Test
+    public void testIllegalVersion() {
         ByteBuffer buffer = ByteBuffer.allocate(2);
         buffer.putShort((short) -1);
         buffer.flip();
-        EndTransactionMarker.deserializeValue(ControlRecordType.ABORT, buffer);
-    }
-
-    @Test(expected = InvalidRecordException.class)
-    public void testNotEnoughBytes() {
-        EndTransactionMarker.deserializeValue(ControlRecordType.COMMIT, ByteBuffer.wrap(new byte[0]));
+        assertThrows(InvalidRecordException.class, () -> EndTransactionMarker.deserializeValue(ControlRecordType.ABORT, buffer));
     }
 
     @Test
@@ -67,5 +81,71 @@ public class EndTransactionMarkerTest {
         buffer.flip();
         EndTransactionMarker deserialized = EndTransactionMarker.deserializeValue(ControlRecordType.COMMIT, buffer);
         assertEquals(coordinatorEpoch, deserialized.coordinatorEpoch());
+    }
+
+    @Test
+    public void testSerializeAndDeserialize() {
+        for (ControlRecordType type: VALID_CONTROLLER_RECORD_TYPE) {
+            for (short version = EndTxnMarker.LOWEST_SUPPORTED_VERSION;
+                 version <= EndTxnMarker.HIGHEST_SUPPORTED_VERSION; version++) {
+                EndTransactionMarker marker = new EndTransactionMarker(type, 1);
+
+                ByteBuffer buffer = marker.serializeValue();
+                EndTransactionMarker deserializedMarker = EndTransactionMarker.deserializeValue(type, buffer);
+                assertEquals(marker, deserializedMarker);
+            }
+        }
+    }
+
+    @Test
+    public void testEndTxnMarkerValueSize() {
+        for (ControlRecordType type: VALID_CONTROLLER_RECORD_TYPE) {
+            EndTransactionMarker marker = new EndTransactionMarker(type, 1);
+            int offsetSize = ByteUtils.sizeOfVarint(0);
+            int timestampSize = ByteUtils.sizeOfVarlong(0);
+            int keySize = ControlRecordType.CURRENT_CONTROL_RECORD_KEY_SIZE;
+            int valueSize = marker.serializeValue().remaining();
+            int headerSize = ByteUtils.sizeOfVarint(Record.EMPTY_HEADERS.length);
+            int totalSize = 1 + offsetSize + timestampSize + ByteUtils.sizeOfVarint(keySize) + keySize + ByteUtils.sizeOfVarint(valueSize) + valueSize + headerSize;
+            assertEquals(ByteUtils.sizeOfVarint(totalSize) +  totalSize, marker.endTxnMarkerValueSize());
+        }
+    }
+
+    @Test
+    public void testBackwardDeserializeCompatibility() {
+        int coordinatorEpoch = 10;
+        for (ControlRecordType type: VALID_CONTROLLER_RECORD_TYPE) {
+            for (short version = EndTxnMarker.LOWEST_SUPPORTED_VERSION;
+                 version <= EndTxnMarker.HIGHEST_SUPPORTED_VERSION; version++) {
+
+                Struct struct = new Struct(v0Schema);
+                struct.set("version", version);
+                struct.set("coordinator_epoch", coordinatorEpoch);
+
+                ByteBuffer oldVersionBuffer = ByteBuffer.allocate(struct.sizeOf());
+                struct.writeTo(oldVersionBuffer);
+                oldVersionBuffer.flip();
+
+                EndTransactionMarker deserializedMarker = EndTransactionMarker.deserializeValue(type, oldVersionBuffer);
+                assertEquals(coordinatorEpoch, deserializedMarker.coordinatorEpoch());
+                assertEquals(type, deserializedMarker.controlType());
+            }
+        }
+    }
+
+    @Test
+    public void testForwardDeserializeCompatibility() {
+        int coordinatorEpoch = 10;
+        for (ControlRecordType type: VALID_CONTROLLER_RECORD_TYPE) {
+            for (short version = EndTxnMarker.LOWEST_SUPPORTED_VERSION;
+                 version <= EndTxnMarker.HIGHEST_SUPPORTED_VERSION; version++) {
+                EndTransactionMarker marker = new EndTransactionMarker(type, coordinatorEpoch);
+                ByteBuffer newVersionBuffer = marker.serializeValue();
+
+                Struct struct = v0Schema.read(newVersionBuffer);
+                EndTransactionMarker deserializedMarker = new EndTransactionMarker(type, struct.getInt("coordinator_epoch"));
+                assertEquals(marker, deserializedMarker);
+            }
+        }
     }
 }

@@ -21,16 +21,16 @@ import org.apache.kafka.common.acl.AccessControlEntry;
 import org.apache.kafka.common.acl.AclBinding;
 import org.apache.kafka.common.acl.AclOperation;
 import org.apache.kafka.common.acl.AclPermissionType;
-import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.message.DescribeAclsResponseData;
 import org.apache.kafka.common.message.DescribeAclsResponseData.AclDescription;
 import org.apache.kafka.common.message.DescribeAclsResponseData.DescribeAclsResource;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
 import org.apache.kafka.common.resource.PatternType;
 import org.apache.kafka.common.resource.ResourcePattern;
 import org.apache.kafka.common.resource.ResourceType;
-import org.junit.Test;
+
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -38,10 +38,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class DescribeAclsResponseTest {
-    private static final short V0 = 0;
     private static final short V1 = 1;
 
     private static final AclDescription ALLOW_CREATE_ACL = buildAclDescription(
@@ -74,43 +74,19 @@ public class DescribeAclsResponseTest {
             PatternType.LITERAL,
             Collections.singletonList(ALLOW_CREATE_ACL));
 
-    private static final DescribeAclsResource LITERAL_ACL2 = buildResource(
-            "group",
-            ResourceType.GROUP,
-            PatternType.LITERAL,
-            Collections.singletonList(DENY_READ_ACL));
-
-    @Test(expected = UnsupportedVersionException.class)
-    public void shouldThrowOnV0IfNotLiteral() {
-        buildResponse(10, Errors.NONE, Collections.singletonList(PREFIXED_ACL1)).toStruct(V0);
-    }
-
-    @Test(expected = IllegalArgumentException.class)
-    public void shouldThrowIfUnknown() {
-        buildResponse(10, Errors.NONE, Collections.singletonList(UNKNOWN_ACL)).toStruct(V0);
-    }
-
     @Test
-    public void shouldRoundTripV0() {
-        List<DescribeAclsResource> resources = Arrays.asList(LITERAL_ACL1, LITERAL_ACL2);
-        final DescribeAclsResponse original = buildResponse(10, Errors.NONE, resources);
-        final Struct struct = original.toStruct(V0);
-
-        final DescribeAclsResponse result = new DescribeAclsResponse(struct, V0);
-        assertResponseEquals(original, result);
-
-        final DescribeAclsResponse result2 = buildResponse(10, Errors.NONE, DescribeAclsResponse.aclsResources(
-            DescribeAclsResponse.aclBindings(resources)));
-        assertResponseEquals(original, result2);
+    public void shouldThrowIfUnknown() {
+        assertThrows(IllegalArgumentException.class,
+            () -> buildResponse(10, Errors.NONE, Collections.singletonList(UNKNOWN_ACL)).serialize(V1));
     }
 
     @Test
     public void shouldRoundTripV1() {
         List<DescribeAclsResource> resources = Arrays.asList(LITERAL_ACL1, PREFIXED_ACL1);
         final DescribeAclsResponse original = buildResponse(100, Errors.NONE, resources);
-        final Struct struct = original.toStruct(V1);
+        final Readable readable = original.serialize(V1);
 
-        final DescribeAclsResponse result = new DescribeAclsResponse(struct, V1);
+        final DescribeAclsResponse result = DescribeAclsResponse.parse(readable, V1);
         assertResponseEquals(original, result);
 
         final DescribeAclsResponse result2 = buildResponse(100, Errors.NONE, DescribeAclsResponse.aclsResources(

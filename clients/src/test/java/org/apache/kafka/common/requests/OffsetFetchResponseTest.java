@@ -16,208 +16,274 @@
  */
 package org.apache.kafka.common.requests;
 
-import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.UnsupportedVersionException;
+import org.apache.kafka.common.message.OffsetFetchRequestData;
 import org.apache.kafka.common.message.OffsetFetchResponseData;
-import org.apache.kafka.common.message.OffsetFetchResponseData.OffsetFetchResponsePartition;
-import org.apache.kafka.common.message.OffsetFetchResponseData.OffsetFetchResponseTopic;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
-import org.apache.kafka.common.record.RecordBatch;
-import org.apache.kafka.common.requests.OffsetFetchResponse.PartitionData;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.kafka.common.utils.annotation.ApiKeyVersionsSource;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Optional;
+import org.junit.jupiter.params.ParameterizedTest;
 
-import static org.apache.kafka.common.protocol.CommonFields.ERROR_CODE;
-import static org.apache.kafka.common.requests.AbstractResponse.DEFAULT_THROTTLE_TIME;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import java.util.List;
+
+import static org.apache.kafka.common.record.RecordBatch.NO_PARTITION_LEADER_EPOCH;
+import static org.apache.kafka.common.requests.OffsetFetchResponse.INVALID_OFFSET;
+import static org.apache.kafka.common.requests.OffsetFetchResponse.NO_METADATA;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class OffsetFetchResponseTest {
+    @ParameterizedTest
+    @ApiKeyVersionsSource(apiKey = ApiKeys.OFFSET_FETCH)
+    public void testBuilderWithSingleGroup(short version) {
+        var group = new OffsetFetchResponseData.OffsetFetchResponseGroup()
+            .setGroupId("group")
+            .setTopics(List.of(
+                new OffsetFetchResponseData.OffsetFetchResponseTopics()
+                    .setName("foo")
+                    .setPartitions(List.of(
+                        new OffsetFetchResponseData.OffsetFetchResponsePartitions()
+                            .setPartitionIndex(0)
+                            .setCommittedOffset(10)
+                            .setCommittedLeaderEpoch(5)
+                            .setMetadata("metadata")
+                    ))
+            ));
 
-    private final int throttleTimeMs = 10;
-    private final int offset = 100;
-    private final String metadata = "metadata";
-
-    private final String topicOne = "topic1";
-    private final int partitionOne = 1;
-    private final Optional<Integer> leaderEpochOne = Optional.of(1);
-    private final String topicTwo = "topic2";
-    private final int partitionTwo = 2;
-    private final Optional<Integer> leaderEpochTwo = Optional.of(2);
-
-    private Map<TopicPartition, PartitionData> partitionDataMap;
-
-    @Before
-    public void setUp() {
-        partitionDataMap = new HashMap<>();
-        partitionDataMap.put(new TopicPartition(topicOne, partitionOne), new PartitionData(
-            offset,
-            leaderEpochOne,
-            metadata,
-            Errors.TOPIC_AUTHORIZATION_FAILED
-        ));
-        partitionDataMap.put(new TopicPartition(topicTwo, partitionTwo), new PartitionData(
-            offset,
-            leaderEpochTwo,
-            metadata,
-            Errors.UNKNOWN_TOPIC_OR_PARTITION
-        ));
-    }
-
-    @Test
-    public void testConstructor() {
-        OffsetFetchResponse response = new OffsetFetchResponse(throttleTimeMs, Errors.NOT_COORDINATOR, partitionDataMap);
-        assertEquals(Errors.NOT_COORDINATOR, response.error());
-        assertEquals(Collections.singletonMap(Errors.NOT_COORDINATOR, 1), response.errorCounts());
-
-        assertEquals(throttleTimeMs, response.throttleTimeMs());
-
-        Map<TopicPartition, PartitionData> responseData = response.responseData();
-        assertEquals(partitionDataMap, responseData);
-        responseData.forEach(
-            (tp, data) -> assertTrue(data.hasError())
-        );
-    }
-
-    /**
-     * Test behavior changes over the versions. Refer to resources.common.messages.OffsetFetchResponse.json
-     */
-    @Test
-    public void testStructBuild() {
-        partitionDataMap.put(new TopicPartition(topicTwo, partitionTwo), new PartitionData(
-            offset,
-            leaderEpochTwo,
-            metadata,
-            Errors.GROUP_AUTHORIZATION_FAILED
-        ));
-
-        OffsetFetchResponse latestResponse = new OffsetFetchResponse(throttleTimeMs, Errors.NONE, partitionDataMap);
-
-        for (short version = 0; version <= ApiKeys.OFFSET_FETCH.latestVersion(); version++) {
-            Struct struct = latestResponse.data.toStruct(version);
-
-            OffsetFetchResponse oldResponse =  new OffsetFetchResponse(struct, version);
-
-            if (version <= 1) {
-                assertFalse(struct.hasField(ERROR_CODE));
-
-                // Partition level error populated in older versions.
-                assertEquals(Errors.GROUP_AUTHORIZATION_FAILED, oldResponse.error());
-                assertEquals(Collections.singletonMap(Errors.GROUP_AUTHORIZATION_FAILED, 1), oldResponse.errorCounts());
-
-            } else {
-                assertTrue(struct.hasField(ERROR_CODE));
-
-                assertEquals(Errors.NONE, oldResponse.error());
-                assertEquals(Collections.singletonMap(Errors.NONE, 1), oldResponse.errorCounts());
-            }
-
-            if (version <= 2) {
-                assertEquals(DEFAULT_THROTTLE_TIME, oldResponse.throttleTimeMs());
-            } else {
-                assertEquals(throttleTimeMs, oldResponse.throttleTimeMs());
-            }
-
-            Map<TopicPartition, PartitionData> expectedDataMap = new HashMap<>();
-            for (Map.Entry<TopicPartition, PartitionData> entry : partitionDataMap.entrySet()) {
-                PartitionData partitionData = entry.getValue();
-                expectedDataMap.put(entry.getKey(), new PartitionData(
-                    partitionData.offset,
-                    version <= 4 ? Optional.empty() : partitionData.leaderEpoch,
-                    partitionData.metadata,
-                    partitionData.error
-                ));
-            }
-
-            Map<TopicPartition, PartitionData> responseData = oldResponse.responseData();
-            assertEquals(expectedDataMap, responseData);
-
-            responseData.forEach(
-                (tp, data) -> assertTrue(data.hasError())
+        if (version < 8) {
+            assertEquals(
+                new OffsetFetchResponseData()
+                    .setTopics(List.of(
+                        new OffsetFetchResponseData.OffsetFetchResponseTopic()
+                            .setName("foo")
+                            .setPartitions(List.of(
+                                new OffsetFetchResponseData.OffsetFetchResponsePartition()
+                                    .setPartitionIndex(0)
+                                    .setCommittedOffset(10)
+                                    .setCommittedLeaderEpoch(5)
+                                    .setMetadata("metadata")
+                            ))
+                    )),
+                new OffsetFetchResponse.Builder(group).build(version).data()
+            );
+        } else {
+            assertEquals(
+                new OffsetFetchResponseData()
+                    .setGroups(List.of(group)),
+                new OffsetFetchResponse.Builder(group).build(version).data()
             );
         }
     }
 
-    @Test
-    public void testShouldThrottle() {
-        OffsetFetchResponse response = new OffsetFetchResponse(throttleTimeMs, Errors.NONE, partitionDataMap);
-        for (short version = 0; version <= ApiKeys.OFFSET_FETCH.latestVersion(); version++) {
-            if (version >= 4) {
-                assertTrue(response.shouldClientThrottle(version));
-            } else {
-                assertFalse(response.shouldClientThrottle(version));
-            }
+    @ParameterizedTest
+    @ApiKeyVersionsSource(apiKey = ApiKeys.OFFSET_FETCH)
+    public void testBuilderWithMultipleGroups(short version) {
+        var groups = List.of(
+            new OffsetFetchResponseData.OffsetFetchResponseGroup()
+                .setGroupId("group1")
+                .setTopics(List.of(
+                    new OffsetFetchResponseData.OffsetFetchResponseTopics()
+                        .setName("foo")
+                        .setPartitions(List.of(
+                            new OffsetFetchResponseData.OffsetFetchResponsePartitions()
+                                .setPartitionIndex(0)
+                                .setCommittedOffset(10)
+                                .setCommittedLeaderEpoch(5)
+                                .setMetadata("metadata")
+                        ))
+                )),
+            new OffsetFetchResponseData.OffsetFetchResponseGroup()
+                .setGroupId("group2")
+                .setTopics(List.of(
+                    new OffsetFetchResponseData.OffsetFetchResponseTopics()
+                        .setName("bar")
+                        .setPartitions(List.of(
+                            new OffsetFetchResponseData.OffsetFetchResponsePartitions()
+                                .setPartitionIndex(0)
+                                .setCommittedOffset(10)
+                                .setCommittedLeaderEpoch(5)
+                                .setMetadata("metadata")
+                        ))
+                ))
+        );
+
+        if (version < 8) {
+            assertThrows(UnsupportedVersionException.class,
+                () -> new OffsetFetchResponse.Builder(groups).build(version));
+        } else {
+            assertEquals(
+                new OffsetFetchResponseData()
+                    .setGroups(groups),
+                new OffsetFetchResponse.Builder(groups).build(version).data()
+            );
         }
     }
 
-    @Test
-    public void testNullableMetadata() {
-        partitionDataMap.clear();
-        partitionDataMap.put(new TopicPartition(topicOne, partitionOne),
-                             new PartitionData(
-                                 offset,
-                                 leaderEpochOne,
-                                 null,
-                                 Errors.UNKNOWN_TOPIC_OR_PARTITION)
-        );
+    @ParameterizedTest
+    @ApiKeyVersionsSource(apiKey = ApiKeys.OFFSET_FETCH)
+    public void testGroupWithSingleGroup(short version) {
+        var data = new OffsetFetchResponseData();
 
-        OffsetFetchResponse response = new OffsetFetchResponse(throttleTimeMs, Errors.GROUP_AUTHORIZATION_FAILED, partitionDataMap);
-        OffsetFetchResponseData expectedData =
-            new OffsetFetchResponseData()
-                .setErrorCode(Errors.GROUP_AUTHORIZATION_FAILED.code())
-                .setThrottleTimeMs(throttleTimeMs)
-                .setTopics(Collections.singletonList(
-                    new OffsetFetchResponseTopic()
-                        .setName(topicOne)
-                        .setPartitions(Collections.singletonList(
-                            new OffsetFetchResponsePartition()
-                                .setPartitionIndex(partitionOne)
-                                .setCommittedOffset(offset)
-                                .setCommittedLeaderEpoch(leaderEpochOne.orElse(-1))
-                                .setErrorCode(Errors.UNKNOWN_TOPIC_OR_PARTITION.code())
-                                .setMetadata(null))
+        if (version < 8) {
+            data.setTopics(List.of(
+                new OffsetFetchResponseData.OffsetFetchResponseTopic()
+                    .setName("foo")
+                    .setPartitions(List.of(
+                        new OffsetFetchResponseData.OffsetFetchResponsePartition()
+                            .setPartitionIndex(0)
+                            .setCommittedOffset(10)
+                            .setCommittedLeaderEpoch(5)
+                            .setMetadata("metadata")
+                    ))
+            ));
+        } else {
+            data.setGroups(List.of(
+                new OffsetFetchResponseData.OffsetFetchResponseGroup()
+                    .setGroupId("foo")
+                    .setTopics(List.of(
+                        new OffsetFetchResponseData.OffsetFetchResponseTopics()
+                            .setName("foo")
+                            .setPartitions(List.of(
+                                new OffsetFetchResponseData.OffsetFetchResponsePartitions()
+                                    .setPartitionIndex(0)
+                                    .setCommittedOffset(10)
+                                    .setCommittedLeaderEpoch(5)
+                                    .setMetadata("metadata")
+                            ))
+                    ))
+            ));
+        }
+
+        assertEquals(
+            new OffsetFetchResponseData.OffsetFetchResponseGroup()
+                .setGroupId("foo")
+                .setTopics(List.of(
+                    new OffsetFetchResponseData.OffsetFetchResponseTopics()
+                        .setName("foo")
+                        .setPartitions(List.of(
+                            new OffsetFetchResponseData.OffsetFetchResponsePartitions()
+                                .setPartitionIndex(0)
+                                .setCommittedOffset(10)
+                                .setCommittedLeaderEpoch(5)
+                                .setMetadata("metadata")
                         ))
-                );
-        assertEquals(expectedData, response.data);
+                )),
+            new OffsetFetchResponse(data, version).group("foo")
+        );
     }
 
-    @Test
-    public void testUseDefaultLeaderEpoch() {
-        final Optional<Integer> emptyLeaderEpoch = Optional.empty();
-        partitionDataMap.clear();
-
-        partitionDataMap.put(new TopicPartition(topicOne, partitionOne),
-                             new PartitionData(
-                                 offset,
-                                 emptyLeaderEpoch,
-                                 metadata,
-                                 Errors.UNKNOWN_TOPIC_OR_PARTITION)
+    @ParameterizedTest
+    @ApiKeyVersionsSource(apiKey = ApiKeys.OFFSET_FETCH, fromVersion = 8)
+    public void testGroupWithMultipleGroups(short version) {
+        var groups = List.of(
+            new OffsetFetchResponseData.OffsetFetchResponseGroup()
+                .setGroupId("group1")
+                .setTopics(List.of(
+                    new OffsetFetchResponseData.OffsetFetchResponseTopics()
+                        .setName("foo")
+                        .setPartitions(List.of(
+                            new OffsetFetchResponseData.OffsetFetchResponsePartitions()
+                                .setPartitionIndex(0)
+                                .setCommittedOffset(10)
+                                .setCommittedLeaderEpoch(5)
+                                .setMetadata("metadata")
+                        ))
+                )),
+            new OffsetFetchResponseData.OffsetFetchResponseGroup()
+                .setGroupId("group2")
+                .setTopics(List.of(
+                    new OffsetFetchResponseData.OffsetFetchResponseTopics()
+                        .setName("bar")
+                        .setPartitions(List.of(
+                            new OffsetFetchResponseData.OffsetFetchResponsePartitions()
+                                .setPartitionIndex(0)
+                                .setCommittedOffset(10)
+                                .setCommittedLeaderEpoch(5)
+                                .setMetadata("metadata")
+                        ))
+                ))
         );
 
-        OffsetFetchResponse response = new OffsetFetchResponse(throttleTimeMs, Errors.NOT_COORDINATOR, partitionDataMap);
-        OffsetFetchResponseData expectedData =
-            new OffsetFetchResponseData()
-                .setErrorCode(Errors.NOT_COORDINATOR.code())
-                .setThrottleTimeMs(throttleTimeMs)
-                .setTopics(Collections.singletonList(
-                new OffsetFetchResponseTopic()
-                    .setName(topicOne)
-                    .setPartitions(Collections.singletonList(
-                        new OffsetFetchResponsePartition()
-                            .setPartitionIndex(partitionOne)
-                            .setCommittedOffset(offset)
-                            .setCommittedLeaderEpoch(RecordBatch.NO_PARTITION_LEADER_EPOCH)
-                            .setErrorCode(Errors.UNKNOWN_TOPIC_OR_PARTITION.code())
-                            .setMetadata(metadata))
+        var response = new OffsetFetchResponse(
+            new OffsetFetchResponseData().setGroups(groups),
+            version
+        );
+
+        groups.forEach(group ->
+            assertEquals(group, response.group(group.groupId()))
+        );
+    }
+
+    @ParameterizedTest
+    @ApiKeyVersionsSource(apiKey = ApiKeys.OFFSET_FETCH)
+    public void testGroupWithSingleGroupWithTopLevelError(short version) {
+        var data = new OffsetFetchResponseData();
+
+        if (version < 2) {
+            data.setTopics(List.of(
+                new OffsetFetchResponseData.OffsetFetchResponseTopic()
+                    .setName("foo")
+                    .setPartitions(List.of(
+                        new OffsetFetchResponseData.OffsetFetchResponsePartition()
+                            .setPartitionIndex(0)
+                            .setErrorCode(Errors.INVALID_GROUP_ID.code())
                     ))
-                );
-        assertEquals(expectedData, response.data);
+            ));
+        } else if (version < 8) {
+            data.setErrorCode(Errors.INVALID_GROUP_ID.code());
+        } else {
+            data.setGroups(List.of(
+                new OffsetFetchResponseData.OffsetFetchResponseGroup()
+                    .setGroupId("foo")
+                    .setErrorCode(Errors.INVALID_GROUP_ID.code())
+            ));
+        }
+
+        assertEquals(
+            new OffsetFetchResponseData.OffsetFetchResponseGroup()
+                .setGroupId("foo")
+                .setErrorCode(Errors.INVALID_GROUP_ID.code()),
+            new OffsetFetchResponse(data, version).group("foo")
+        );
+    }
+
+    @ParameterizedTest
+    @ApiKeyVersionsSource(apiKey = ApiKeys.OFFSET_FETCH)
+    public void testSingleGroupWithError(short version) {
+        var group = new OffsetFetchRequestData.OffsetFetchRequestGroup()
+            .setGroupId("group1")
+            .setTopics(List.of(
+                new OffsetFetchRequestData.OffsetFetchRequestTopics()
+                    .setName("foo")
+                    .setPartitionIndexes(List.of(0))
+            ));
+
+        if (version < 2) {
+            assertEquals(
+                new OffsetFetchResponseData.OffsetFetchResponseGroup()
+                    .setGroupId("group1")
+                    .setTopics(List.of(
+                        new OffsetFetchResponseData.OffsetFetchResponseTopics()
+                            .setName("foo")
+                            .setPartitions(List.of(
+                                new OffsetFetchResponseData.OffsetFetchResponsePartitions()
+                                    .setPartitionIndex(0)
+                                    .setErrorCode(Errors.INVALID_GROUP_ID.code())
+                                    .setCommittedOffset(INVALID_OFFSET)
+                                    .setMetadata(NO_METADATA)
+                                    .setCommittedLeaderEpoch(NO_PARTITION_LEADER_EPOCH)
+                            ))
+                    )),
+                OffsetFetchResponse.groupError(group, Errors.INVALID_GROUP_ID, version)
+            );
+        } else {
+            assertEquals(
+                new OffsetFetchResponseData.OffsetFetchResponseGroup()
+                    .setGroupId("group1")
+                    .setErrorCode(Errors.INVALID_GROUP_ID.code()),
+                OffsetFetchResponse.groupError(group, Errors.INVALID_GROUP_ID, version)
+            );
+        }
     }
 }

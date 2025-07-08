@@ -28,11 +28,12 @@ import joptsimple.OptionParser
 import kafka.utils._
 import org.apache.kafka.clients.admin.{Admin, NewTopic}
 import org.apache.kafka.clients.CommonClientConfigs
-import org.apache.kafka.clients.consumer.{ConsumerConfig, KafkaConsumer}
+import org.apache.kafka.clients.consumer.{Consumer, ConsumerConfig, KafkaConsumer}
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerConfig, ProducerRecord}
 import org.apache.kafka.common.config.TopicConfig
 import org.apache.kafka.common.serialization.{ByteArraySerializer, StringDeserializer}
-import org.apache.kafka.common.utils.{AbstractIterator, Utils}
+import org.apache.kafka.common.utils.{Exit, AbstractIterator, Utils}
+import org.apache.kafka.server.util.CommandLineUtils
 
 import scala.jdk.CollectionConverters._
 
@@ -97,8 +98,8 @@ object LogCompactionTester {
 
     val options = parser.parse(args: _*)
 
-    if (args.length == 0)
-      CommandLineUtils.printUsageAndDie(parser, "A tool to test log compaction. Valid options are: ")
+    if (args.isEmpty)
+      CommandLineUtils.printUsageAndExit(parser, "A tool to test log compaction. Valid options are: ")
 
     CommandLineUtils.checkRequiredArgs(parser, options, brokerOpt, numMessagesOpt)
 
@@ -141,8 +142,8 @@ object LogCompactionTester {
     val adminClient = Admin.create(adminConfig)
 
     try {
-      val topicConfigs = Map(TopicConfig.CLEANUP_POLICY_CONFIG -> TopicConfig.CLEANUP_POLICY_COMPACT)
-      val newTopics = topics.map(name => new NewTopic(name, 1, 1.toShort).configs(topicConfigs.asJava)).asJava
+      val topicConfigs = java.util.Map.of(TopicConfig.CLEANUP_POLICY_CONFIG, TopicConfig.CLEANUP_POLICY_COMPACT)
+      val newTopics = topics.map(name => new NewTopic(name, 1, 1.toShort).configs(topicConfigs)).asJava
       adminClient.createTopics(newTopics).all.get
 
       var pendingTopics: Seq[String] = Seq()
@@ -247,12 +248,12 @@ object LogCompactionTester {
         if (exitCode != 0) {
           System.err.println("Process exited abnormally.")
           while (process.getErrorStream.available > 0) {
-            System.err.write(process.getErrorStream().read())
+            System.err.write(process.getErrorStream.read())
           }
         }
       }
     }.start()
-    new BufferedReader(new InputStreamReader(process.getInputStream(), UTF_8), 10 * 1024 * 1024)
+    new BufferedReader(new InputStreamReader(process.getInputStream, UTF_8), 10 * 1024 * 1024)
   }
 
   def produceMessages(brokerUrl: String,
@@ -292,7 +293,7 @@ object LogCompactionTester {
     }
   }
 
-  def createConsumer(brokerUrl: String): KafkaConsumer[String, String] = {
+  def createConsumer(brokerUrl: String): Consumer[String, String] = {
     val consumerProps = new Properties
     consumerProps.setProperty(ConsumerConfig.GROUP_ID_CONFIG, "log-cleaner-test-" + new Random().nextInt(Int.MaxValue))
     consumerProps.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, brokerUrl)
@@ -316,7 +317,7 @@ object LogCompactionTester {
             val delete = record.value == null
             val value = if (delete) -1L else record.value.toLong
             consumedWriter.write(TestRecord(record.topic, record.key.toInt, value, delete).toString)
-            consumedWriter.newLine
+            consumedWriter.newLine()
           }
         } else {
           done = true

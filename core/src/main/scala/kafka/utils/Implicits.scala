@@ -45,5 +45,4 @@ object Implicits {
       (properties: util.Hashtable[AnyRef, AnyRef]).putAll(map.asJava)
 
   }
-
 }

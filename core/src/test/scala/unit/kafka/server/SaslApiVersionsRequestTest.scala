@@ -16,57 +16,50 @@
   */
 package kafka.server
 
+import org.apache.kafka.common.message.SaslHandshakeRequestData
+import org.apache.kafka.common.protocol.{ApiKeys, Errors}
+import org.apache.kafka.common.requests.{ApiVersionsRequest, ApiVersionsResponse, SaslHandshakeRequest, SaslHandshakeResponse}
+import org.apache.kafka.common.security.auth.SecurityProtocol
+import org.apache.kafka.common.test.api.{ClusterTest, Type}
+import org.apache.kafka.common.test.ClusterInstance
+import org.apache.kafka.server.IntegrationTestUtils
+import org.junit.jupiter.api.Assertions._
+
 import java.net.Socket
 import java.util.Collections
 
-import kafka.api.{KafkaSasl, SaslSetup}
-import kafka.utils.JaasTestUtils
-import org.apache.kafka.common.message.SaslHandshakeRequestData
-import org.apache.kafka.common.protocol.Errors
-import org.apache.kafka.common.requests.{ApiVersionsRequest, ApiVersionsResponse, SaslHandshakeRequest, SaslHandshakeResponse}
-import org.apache.kafka.common.security.auth.SecurityProtocol
-import org.junit.Assert._
-import org.junit.{After, Before, Test}
+class SaslApiVersionsRequestTest(cluster: ClusterInstance) extends AbstractApiVersionsRequestTest(cluster) {
 
-class SaslApiVersionsRequestTest extends AbstractApiVersionsRequestTest with SaslSetup {
-  override protected def securityProtocol = SecurityProtocol.SASL_PLAINTEXT
-  private val kafkaClientSaslMechanism = "PLAIN"
-  private val kafkaServerSaslMechanisms = List("PLAIN")
-  protected override val serverSaslProperties = Some(kafkaServerSaslProperties(kafkaServerSaslMechanisms, kafkaClientSaslMechanism))
-  protected override val clientSaslProperties = Some(kafkaClientSaslProperties(kafkaClientSaslMechanism))
-  override def brokerCount = 1
-
-  @Before
-  override def setUp(): Unit = {
-    startSasl(jaasSections(kafkaServerSaslMechanisms, Some(kafkaClientSaslMechanism), KafkaSasl, JaasTestUtils.KafkaServerContextName))
-    super.setUp()
-  }
-
-  @After
-  override def tearDown(): Unit = {
-    super.tearDown()
-    closeSasl()
-  }
-
-  @Test
+  @ClusterTest(types = Array(Type.KRAFT),
+    brokerSecurityProtocol = SecurityProtocol.SASL_PLAINTEXT,
+    controllerSecurityProtocol = SecurityProtocol.SASL_PLAINTEXT
+  )
   def testApiVersionsRequestBeforeSaslHandshakeRequest(): Unit = {
-    val socket = connect()
+    val socket = IntegrationTestUtils.connect(cluster.boundPorts().get(0))
     try {
-      val apiVersionsResponse = sendAndReceive[ApiVersionsResponse](
+      val apiVersionsResponse = IntegrationTestUtils.sendAndReceive[ApiVersionsResponse](
         new ApiVersionsRequest.Builder().build(0), socket)
-      validateApiVersionsResponse(apiVersionsResponse)
+      validateApiVersionsResponse(
+        apiVersionsResponse,
+        enableUnstableLastVersion = !"false".equals(
+          cluster.config().serverProperties().get("unstable.api.versions.enable")),
+        apiVersion = 0.toShort
+      )
       sendSaslHandshakeRequestValidateResponse(socket)
     } finally {
       socket.close()
     }
   }
 
-  @Test
+  @ClusterTest(types = Array(Type.KRAFT),
+    brokerSecurityProtocol = SecurityProtocol.SASL_PLAINTEXT,
+    controllerSecurityProtocol = SecurityProtocol.SASL_PLAINTEXT
+  )
   def testApiVersionsRequestAfterSaslHandshakeRequest(): Unit = {
-    val socket = connect()
+    val socket = IntegrationTestUtils.connect(cluster.boundPorts().get(0))
     try {
       sendSaslHandshakeRequestValidateResponse(socket)
-      val response = sendAndReceive[ApiVersionsResponse](
+      val response = IntegrationTestUtils.sendAndReceive[ApiVersionsResponse](
         new ApiVersionsRequest.Builder().build(0), socket)
       assertEquals(Errors.ILLEGAL_SASL_STATE.code, response.data.errorCode)
     } finally {
@@ -74,16 +67,24 @@ class SaslApiVersionsRequestTest extends AbstractApiVersionsRequestTest with Sas
     }
   }
 
-  @Test
+  @ClusterTest(types = Array(Type.KRAFT),
+    brokerSecurityProtocol = SecurityProtocol.SASL_PLAINTEXT,
+    controllerSecurityProtocol = SecurityProtocol.SASL_PLAINTEXT
+  )
   def testApiVersionsRequestWithUnsupportedVersion(): Unit = {
-    val socket = connect()
+    val socket = IntegrationTestUtils.connect(cluster.boundPorts().get(0))
     try {
       val apiVersionsRequest = new ApiVersionsRequest.Builder().build(0)
       val apiVersionsResponse = sendUnsupportedApiVersionRequest(apiVersionsRequest)
       assertEquals(Errors.UNSUPPORTED_VERSION.code, apiVersionsResponse.data.errorCode)
-      val apiVersionsResponse2 = sendAndReceive[ApiVersionsResponse](
+      val apiVersionsResponse2 = IntegrationTestUtils.sendAndReceive[ApiVersionsResponse](
         new ApiVersionsRequest.Builder().build(0), socket)
-      validateApiVersionsResponse(apiVersionsResponse2)
+      validateApiVersionsResponse(
+        apiVersionsResponse2,
+        enableUnstableLastVersion = !"false".equals(
+          cluster.config().serverProperties().get("unstable.api.versions.enable")),
+        apiVersion = 0.toShort
+      )
       sendSaslHandshakeRequestValidateResponse(socket)
     } finally {
       socket.close()
@@ -91,8 +92,9 @@ class SaslApiVersionsRequestTest extends AbstractApiVersionsRequestTest with Sas
   }
 
   private def sendSaslHandshakeRequestValidateResponse(socket: Socket): Unit = {
-    val request = new SaslHandshakeRequest(new SaslHandshakeRequestData().setMechanism("PLAIN"))
-    val response = sendAndReceive[SaslHandshakeResponse](request, socket)
+    val request = new SaslHandshakeRequest(new SaslHandshakeRequestData().setMechanism("PLAIN"),
+      ApiKeys.SASL_HANDSHAKE.latestVersion)
+    val response = IntegrationTestUtils.sendAndReceive[SaslHandshakeResponse](request, socket)
     assertEquals(Errors.NONE, response.error)
     assertEquals(Collections.singletonList("PLAIN"), response.enabledMechanisms)
   }

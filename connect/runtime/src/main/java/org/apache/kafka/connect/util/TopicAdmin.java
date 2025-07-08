@@ -23,22 +23,33 @@ import org.apache.kafka.clients.admin.ConfigEntry;
 import org.apache.kafka.clients.admin.CreateTopicsOptions;
 import org.apache.kafka.clients.admin.DescribeConfigsOptions;
 import org.apache.kafka.clients.admin.DescribeTopicsOptions;
+import org.apache.kafka.clients.admin.ListOffsetsOptions;
+import org.apache.kafka.clients.admin.ListOffsetsResult;
+import org.apache.kafka.clients.admin.ListOffsetsResult.ListOffsetsResultInfo;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.admin.TopicDescription;
+import org.apache.kafka.common.IsolationLevel;
 import org.apache.kafka.common.KafkaFuture;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.config.ConfigResource;
 import org.apache.kafka.common.config.TopicConfig;
+import org.apache.kafka.common.errors.AuthorizationException;
 import org.apache.kafka.common.errors.ClusterAuthorizationException;
 import org.apache.kafka.common.errors.InvalidConfigurationException;
+import org.apache.kafka.common.errors.InvalidReplicationFactorException;
+import org.apache.kafka.common.errors.LeaderNotAvailableException;
 import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.kafka.common.errors.TopicAuthorizationException;
 import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
-import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.common.utils.Time;
+import org.apache.kafka.common.utils.Timer;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.RetriableException;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,11 +59,13 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -60,13 +73,64 @@ import java.util.stream.Collectors;
  */
 public class TopicAdmin implements AutoCloseable {
 
+    public static final TopicCreationResponse EMPTY_CREATION = new TopicCreationResponse(Collections.emptySet(), Collections.emptySet());
+    private static final List<Class<? extends Exception>> CAUSES_TO_RETRY_TOPIC_CREATION = Arrays.asList(
+            InvalidReplicationFactorException.class,
+            TimeoutException.class);
+
+    public static class TopicCreationResponse {
+
+        private final Set<String> created;
+        private final Set<String> existing;
+
+        public TopicCreationResponse(Set<String> createdTopicNames, Set<String> existingTopicNames) {
+            this.created = Collections.unmodifiableSet(createdTopicNames);
+            this.existing = Collections.unmodifiableSet(existingTopicNames);
+        }
+
+        public Set<String> createdTopics() {
+            return created;
+        }
+
+        public boolean isCreated(String topicName) {
+            return created.contains(topicName);
+        }
+
+        public boolean isExisting(String topicName) {
+            return existing.contains(topicName);
+        }
+
+        public boolean isCreatedOrExisting(String topicName) {
+            return isCreated(topicName) || isExisting(topicName);
+        }
+
+        public int createdTopicsCount() {
+            return created.size();
+        }
+
+        public int existingTopicsCount() {
+            return existing.size();
+        }
+
+        public int createdOrExistingTopicsCount() {
+            return createdTopicsCount() + existingTopicsCount();
+        }
+
+        public boolean isEmpty() {
+            return createdOrExistingTopicsCount() == 0;
+        }
+
+        @Override
+        public String toString() {
+            return "TopicCreationResponse{" + "created=" + created + ", existing=" + existing + '}';
+        }
+    }
+
     public static final int NO_PARTITIONS = -1;
     public static final short NO_REPLICATION_FACTOR = -1;
 
     private static final String CLEANUP_POLICY_CONFIG = TopicConfig.CLEANUP_POLICY_CONFIG;
     private static final String CLEANUP_POLICY_COMPACT = TopicConfig.CLEANUP_POLICY_COMPACT;
-    private static final String MIN_INSYNC_REPLICAS_CONFIG = TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG;
-    private static final String UNCLEAN_LEADER_ELECTION_ENABLE_CONFIG = TopicConfig.UNCLEAN_LEADER_ELECTION_ENABLE_CONFIG;
 
     /**
      * A builder of {@link NewTopic} instances.
@@ -138,29 +202,6 @@ public class TopicAdmin implements AutoCloseable {
         }
 
         /**
-         * Specify the minimum number of in-sync replicas required for this topic.
-         *
-         * @param minInSyncReplicas the minimum number of in-sync replicas allowed for the topic; must be positive
-         * @return this builder to allow methods to be chained; never null
-         */
-        public NewTopicBuilder minInSyncReplicas(short minInSyncReplicas) {
-            this.configs.put(MIN_INSYNC_REPLICAS_CONFIG, Short.toString(minInSyncReplicas));
-            return this;
-        }
-
-        /**
-         * Specify whether the broker is allowed to elect a leader that was not an in-sync replica when no ISRs
-         * are available.
-         *
-         * @param allow true if unclean leaders can be elected, or false if they are not allowed
-         * @return this builder to allow methods to be chained; never null
-         */
-        public NewTopicBuilder uncleanLeaderElection(boolean allow) {
-            this.configs.put(UNCLEAN_LEADER_ELECTION_ENABLE_CONFIG, Boolean.toString(allow));
-            return this;
-        }
-
-        /**
          * Specify the configuration properties for the topic, overwriting any previously-set properties.
          *
          * @param configs the desired topic configuration properties, or null if all existing properties should be cleared
@@ -203,12 +244,15 @@ public class TopicAdmin implements AutoCloseable {
     }
 
     private static final Logger log = LoggerFactory.getLogger(TopicAdmin.class);
-    private final Map<String, Object> adminConfig;
+    private final String bootstrapServers;
     private final Admin admin;
     private final boolean logCreation;
 
     /**
      * Create a new topic admin component with the given configuration.
+     * <p>
+     * Note that this will create an underlying {@link Admin} instance which must be freed when this
+     * topic admin is no longer needed by calling {@link #close()} or {@link #close(Duration)}.
      *
      * @param adminConfig the configuration for the {@link Admin}
      */
@@ -216,16 +260,25 @@ public class TopicAdmin implements AutoCloseable {
         this(adminConfig, Admin.create(adminConfig));
     }
 
-    // visible for testing
-    TopicAdmin(Map<String, Object> adminConfig, Admin adminClient) {
-        this(adminConfig, adminClient, true);
+    public TopicAdmin(Map<String, Object> adminConfig, Admin adminClient) {
+        this(bootstrapServers(adminConfig), adminClient, true);
     }
 
     // visible for testing
-    TopicAdmin(Map<String, Object> adminConfig, Admin adminClient, boolean logCreation) {
+    TopicAdmin(Admin adminClient) {
+        this(null, adminClient, true);
+    }
+
+    // visible for testing
+    TopicAdmin(String bootstrapServers, Admin adminClient, boolean logCreation) {
         this.admin = adminClient;
-        this.adminConfig = adminConfig != null ? adminConfig : Collections.<String, Object>emptyMap();
+        this.bootstrapServers = bootstrapServers != null ? bootstrapServers : "<unknown>";
         this.logCreation = logCreation;
+    }
+
+    private static String bootstrapServers(Map<String, Object> adminConfig) {
+        Object result = adminConfig.get(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG);
+        return result != null ? result.toString() : null;
     }
 
    /**
@@ -260,15 +313,93 @@ public class TopicAdmin implements AutoCloseable {
      *                                     attempting to perform this operation
      */
     public Set<String> createTopics(NewTopic... topics) {
+        return createOrFindTopics(topics).createdTopics();
+    }
+
+    /**
+     * Implements a retry logic around creating topic(s) in case it'd fail due to
+     * specific type of exceptions, see {@link TopicAdmin#retryableTopicCreationException(ConnectException)}
+     *
+     * @param topicDescription the specifications of the topic
+     * @param timeoutMs        Timeout in milliseconds
+     * @param backOffMs        Time for delay after initial failed attempt in milliseconds
+     * @param time             {@link Time} instance
+     * @return the names of the topics that were created by this operation; never null but possibly empty,
+     * the same as {@link TopicAdmin#createTopics(NewTopic...)}
+     */
+    public Set<String> createTopicsWithRetry(NewTopic topicDescription, long timeoutMs, long backOffMs, Time time) {
+        Timer timer = time.timer(timeoutMs);
+        do {
+            try {
+                return createTopics(topicDescription);
+            } catch (ConnectException e) {
+                if (timer.notExpired() && retryableTopicCreationException(e)) {
+                    log.info("'{}' topic creation failed due to '{}', retrying, {}ms remaining",
+                            topicDescription.name(), e.getMessage(), timer.remainingMs());
+                } else {
+                    throw e;
+                }
+            }
+            timer.sleep(backOffMs);
+        } while (timer.notExpired());
+        throw new TimeoutException("Timeout expired while trying to create topic(s)");
+    }
+
+    private boolean retryableTopicCreationException(ConnectException e) {
+        // createTopics wraps the exception into ConnectException
+        // to retry the creation, it should be an ExecutionException from future get which was caused by InvalidReplicationFactorException
+        // or can be a TimeoutException
+        Throwable cause = e.getCause();
+        while (cause != null) {
+            final Throwable finalCause = cause;
+            if (CAUSES_TO_RETRY_TOPIC_CREATION.stream().anyMatch(exceptionClass -> exceptionClass.isInstance(finalCause))) {
+                return true;
+            }
+            cause = cause.getCause();
+        }
+        return false;
+    }
+
+    /**
+     * Attempt to find or create the topic described by the given definition, returning true if the topic was created or had
+     * already existed, or false if the topic did not exist and could not be created.
+     *
+     * @param topic the specification of the topic
+     * @return true if the topic was created or existed, or false if the topic could not already existed.
+     * @throws ConnectException            if an error occurs, the operation takes too long, or the thread is interrupted while
+     *                                     attempting to perform this operation
+     * @throws UnsupportedVersionException if the broker does not support the necessary APIs to perform this request
+     */
+    public boolean createOrFindTopic(NewTopic topic) {
+        if (topic == null) return false;
+        return createOrFindTopics(topic).isCreatedOrExisting(topic.name());
+    }
+
+    /**
+     * Attempt to create the topics described by the given definitions, returning all of the names of those topics that
+     * were created by this request. Any existing topics with the same name are unchanged, and the names of such topics
+     * are excluded from the result.
+     * <p>
+     * If multiple topic definitions have the same topic name, the last one with that name will be used.
+     * <p>
+     * Apache Kafka added support for creating topics in 0.10.1.0, so this method works as expected with that and later versions.
+     * With brokers older than 0.10.1.0, this method is unable to create topics and always returns an empty set.
+     *
+     * @param topics the specifications of the topics
+     * @return the {@link TopicCreationResponse} with the names of the newly created and existing topics;
+     *         never null but possibly empty
+     * @throws ConnectException if an error occurs, the operation takes too long, or the thread is interrupted while
+     *                          attempting to perform this operation
+     */
+    public TopicCreationResponse createOrFindTopics(NewTopic... topics) {
         Map<String, NewTopic> topicsByName = new HashMap<>();
         if (topics != null) {
             for (NewTopic topic : topics) {
                 if (topic != null) topicsByName.put(topic.name(), topic);
             }
         }
-        if (topicsByName.isEmpty()) return Collections.emptySet();
-        String bootstrapServers = bootstrapServers();
-        String topicNameList = Utils.join(topicsByName.keySet(), "', '");
+        if (topicsByName.isEmpty()) return EMPTY_CREATION;
+        String topicNameList = String.join("', '", topicsByName.keySet());
 
         // Attempt to create any missing topics
         CreateTopicsOptions args = new CreateTopicsOptions().validateOnly(false);
@@ -276,6 +407,7 @@ public class TopicAdmin implements AutoCloseable {
 
         // Iterate over each future so that we can handle individual failures like when some topics already exist
         Set<String> newlyCreatedTopicNames = new HashSet<>();
+        Set<String> existingTopicNames = new HashSet<>();
         for (Map.Entry<String, KafkaFuture<Void>> entry : newResults.entrySet()) {
             String topic = entry.getKey();
             try {
@@ -288,25 +420,26 @@ public class TopicAdmin implements AutoCloseable {
                 Throwable cause = e.getCause();
                 if (cause instanceof TopicExistsException) {
                     log.debug("Found existing topic '{}' on the brokers at {}", topic, bootstrapServers);
+                    existingTopicNames.add(topic);
                     continue;
                 }
                 if (cause instanceof UnsupportedVersionException) {
                     log.debug("Unable to create topic(s) '{}' since the brokers at {} do not support the CreateTopics API." +
                             " Falling back to assume topic(s) exist or will be auto-created by the broker.",
                             topicNameList, bootstrapServers);
-                    return Collections.emptySet();
+                    return EMPTY_CREATION;
                 }
                 if (cause instanceof ClusterAuthorizationException) {
                     log.debug("Not authorized to create topic(s) '{}' upon the brokers {}." +
                             " Falling back to assume topic(s) exist or will be auto-created by the broker.",
                             topicNameList, bootstrapServers);
-                    return Collections.emptySet();
+                    return EMPTY_CREATION;
                 }
                 if (cause instanceof TopicAuthorizationException) {
                     log.debug("Not authorized to create topic(s) '{}' upon the brokers {}." +
                                     " Falling back to assume topic(s) exist or will be auto-created by the broker.",
                             topicNameList, bootstrapServers);
-                    return Collections.emptySet();
+                    return EMPTY_CREATION;
                 }
                 if (cause instanceof InvalidConfigurationException) {
                     throw new ConnectException("Unable to create topic(s) '" + topicNameList + "': " + cause.getMessage(),
@@ -324,7 +457,7 @@ public class TopicAdmin implements AutoCloseable {
                 throw new ConnectException("Interrupted while attempting to create/find topic(s) '" + topicNameList + "'", e);
             }
         }
-        return newlyCreatedTopicNames;
+        return new TopicCreationResponse(newlyCreatedTopicNames, existingTopicNames);
     }
 
     /**
@@ -342,11 +475,10 @@ public class TopicAdmin implements AutoCloseable {
         if (topics == null) {
             return Collections.emptyMap();
         }
-        String bootstrapServers = bootstrapServers();
         String topicNameList = String.join(", ", topics);
 
         Map<String, KafkaFuture<TopicDescription>> newResults =
-                admin.describeTopics(Arrays.asList(topics), new DescribeTopicsOptions()).values();
+                admin.describeTopics(Arrays.asList(topics), new DescribeTopicsOptions()).topicNameValues();
 
         // Iterate over each future so that we can handle individual failures like when some topics don't exist
         Map<String, TopicDescription> existingTopics = new HashMap<>();
@@ -498,8 +630,7 @@ public class TopicAdmin implements AutoCloseable {
         if (topics.isEmpty()) {
             return Collections.emptyMap();
         }
-        String bootstrapServers = bootstrapServers();
-        String topicNameList = topics.stream().collect(Collectors.joining(", "));
+        String topicNameList = String.join(", ", topics);
         Collection<ConfigResource> resources = topics.stream()
                                                      .map(t -> new ConfigResource(ConfigResource.Type.TOPIC, t))
                                                      .collect(Collectors.toList());
@@ -539,6 +670,95 @@ public class TopicAdmin implements AutoCloseable {
         return result;
     }
 
+    /**
+     * Fetch the most recent offset for each of the supplied {@link TopicPartition} objects.
+     *
+     * @param partitions the topic partitions
+     * @return the map of offset for each topic partition, or an empty map if the supplied partitions
+     *         are null or empty
+     * @throws UnsupportedVersionException if the admin client cannot read end offsets
+     * @throws TimeoutException if the offset metadata could not be fetched before the amount of time allocated
+     *         by {@code request.timeout.ms} expires, and this call can be retried
+     * @throws LeaderNotAvailableException if the leader was not available and this call can be retried
+     * @throws RetriableException if a retriable error occurs, or the thread is interrupted while attempting
+     *         to perform this operation
+     * @throws ConnectException if a non retriable error occurs
+     */
+    public Map<TopicPartition, Long> endOffsets(Set<TopicPartition> partitions) {
+        if (partitions == null || partitions.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<TopicPartition, OffsetSpec> offsetSpecMap = partitions.stream().collect(Collectors.toMap(Function.identity(), tp -> OffsetSpec.latest()));
+        ListOffsetsResult resultFuture = admin.listOffsets(offsetSpecMap, new ListOffsetsOptions(IsolationLevel.READ_UNCOMMITTED));
+        // Get the individual result for each topic partition so we have better error messages
+        Map<TopicPartition, Long> result = new HashMap<>();
+        for (TopicPartition partition : partitions) {
+            try {
+                ListOffsetsResultInfo info = resultFuture.partitionResult(partition).get();
+                result.put(partition, info.offset());
+            } catch (ExecutionException e) {
+                Throwable cause = e.getCause();
+                String topic = partition.topic();
+                if (cause instanceof AuthorizationException) {
+                    String msg = String.format("Not authorized to get the end offsets for topic '%s' on brokers at %s", topic, bootstrapServers);
+                    throw new ConnectException(msg, cause);
+                } else if (cause instanceof UnsupportedVersionException) {
+                    // Should theoretically never happen, because this method is the same as what the consumer uses and therefore
+                    // should exist in the broker since before the admin client was added
+                    String msg = String.format("API to get the get the end offsets for topic '%s' is unsupported on brokers at %s", topic, bootstrapServers);
+                    throw new UnsupportedVersionException(msg, cause);
+                } else if (cause instanceof TimeoutException) {
+                    String msg = String.format("Timed out while waiting to get end offsets for topic '%s' on brokers at %s", topic, bootstrapServers);
+                    throw new TimeoutException(msg, cause);
+                } else if (cause instanceof LeaderNotAvailableException) {
+                    String msg = String.format("Unable to get end offsets during leader election for topic '%s' on brokers at %s", topic, bootstrapServers);
+                    throw new LeaderNotAvailableException(msg, cause);
+                } else if (cause instanceof org.apache.kafka.common.errors.RetriableException) {
+                    throw (org.apache.kafka.common.errors.RetriableException) cause;
+                } else {
+                    String msg = String.format("Error while getting end offsets for topic '%s' on brokers at %s", topic, bootstrapServers);
+                    throw new ConnectException(msg, cause);
+                }
+            } catch (InterruptedException e) {
+                Thread.interrupted();
+                String msg = String.format("Interrupted while attempting to read end offsets for topic '%s' on brokers at %s", partition.topic(), bootstrapServers);
+                throw new RetriableException(msg, e);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Fetch the most recent offset for each of the supplied {@link TopicPartition} objects, and performs retry when
+     * {@link org.apache.kafka.connect.errors.RetriableException} is thrown.
+     *
+     * @param partitions        the topic partitions
+     * @param timeoutDuration   timeout duration; may not be null
+     * @param retryBackoffMs    the number of milliseconds to delay upon receiving a
+     *                          {@link org.apache.kafka.connect.errors.RetriableException} before retrying again;
+     *                          must be 0 or more
+     * @return                  the map of offset for each topic partition, or an empty map if the supplied partitions
+     *                          are null or empty
+     * @throws UnsupportedVersionException if the broker is too old to support the admin client API to read end offsets
+     * @throws ConnectException if {@code timeoutDuration} is exhausted
+     * @see TopicAdmin#endOffsets(Set)
+     */
+    public Map<TopicPartition, Long> retryEndOffsets(Set<TopicPartition> partitions, Duration timeoutDuration, long retryBackoffMs) {
+
+        try {
+            return RetryUtil.retryUntilTimeout(
+                    () -> endOffsets(partitions),
+                    () -> "list offsets for topic partitions",
+                    timeoutDuration,
+                    retryBackoffMs);
+        } catch (UnsupportedVersionException e) {
+            // Older brokers don't support this admin method, so rethrow it without wrapping it
+            throw e;
+        } catch (Exception e) {
+            throw ConnectUtils.maybeWrap(e, "Failed to list offsets for topic partitions");
+        }
+    }
+
     @Override
     public void close() {
         admin.close();
@@ -546,10 +766,5 @@ public class TopicAdmin implements AutoCloseable {
 
     public void close(Duration timeout) {
         admin.close(timeout);
-    }
-
-    private String bootstrapServers() {
-        Object servers = adminConfig.get(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG);
-        return servers != null ? servers.toString() : "<unknown>";
     }
 }

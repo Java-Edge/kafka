@@ -20,15 +20,16 @@ package org.apache.kafka.common.metrics.internals;
 import org.apache.kafka.common.MetricName;
 import org.apache.kafka.common.metrics.MetricConfig;
 import org.apache.kafka.common.metrics.Metrics;
-import org.junit.Test;
+
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Collections;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 public class IntGaugeSuiteTest {
     private static final Logger log = LoggerFactory.getLogger(IntGaugeSuiteTest.class);
@@ -36,12 +37,11 @@ public class IntGaugeSuiteTest {
     private static IntGaugeSuite<String> createIntGaugeSuite() {
         MetricConfig config = new MetricConfig();
         Metrics metrics = new Metrics(config);
-        IntGaugeSuite<String> suite = new IntGaugeSuite<>(log,
+        return new IntGaugeSuite<>(log,
             "mySuite",
             metrics,
             name -> new MetricName(name, "group", "myMetric", Collections.emptyMap()),
             3);
-        return suite;
     }
 
     @Test

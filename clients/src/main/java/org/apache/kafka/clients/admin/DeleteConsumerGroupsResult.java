@@ -17,17 +17,14 @@
 package org.apache.kafka.clients.admin;
 
 import org.apache.kafka.common.KafkaFuture;
-import org.apache.kafka.common.annotation.InterfaceStability;
 
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
- * The result of the {@link Admin#deleteConsumerGroups(Collection)} call.
- *
- * The API of this class is evolving, see {@link Admin} for details.
+ * The result of the {@link Admin#deleteConsumerGroups(Collection <String>, DeleteConsumerGroupsOptions)} call.
  */
-@InterfaceStability.Evolving
 public class DeleteConsumerGroupsResult {
     private final Map<String, KafkaFuture<Void>> futures;
 
@@ -40,13 +37,15 @@ public class DeleteConsumerGroupsResult {
      * individual deletions.
      */
     public Map<String, KafkaFuture<Void>> deletedGroups() {
-        return futures;
+        Map<String, KafkaFuture<Void>> deletedGroups = new HashMap<>(futures.size());
+        deletedGroups.putAll(futures);
+        return deletedGroups;
     }
 
     /**
      * Return a future which succeeds only if all the consumer group deletions succeed.
      */
     public KafkaFuture<Void> all() {
-        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture[0]));
+        return KafkaFuture.allOf(futures.values().toArray(new KafkaFuture<?>[0]));
     }
 }

@@ -14,35 +14,44 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.kafka.streams.kstream.internals.foreignkeyjoin;
 
 import java.util.Objects;
 
-public class CombinedKey<KF, KP> {
-    private final KF foreignKey;
-    private final KP primaryKey;
+public class CombinedKey<KRight, KLeft> {
+    private final KRight foreignKey;
+    private final KLeft primaryKey;
 
-    CombinedKey(final KF foreignKey, final KP primaryKey) {
-        Objects.requireNonNull(foreignKey, "foreignKey can't be null");
+    CombinedKey(final KRight foreignKey, final KLeft primaryKey) {
         Objects.requireNonNull(primaryKey, "primaryKey can't be null");
         this.foreignKey = foreignKey;
         this.primaryKey = primaryKey;
     }
 
-    public KF getForeignKey() {
+    public KRight foreignKey() {
         return foreignKey;
     }
 
-    public KP getPrimaryKey() {
+    public KLeft primaryKey() {
         return primaryKey;
     }
 
-    public boolean equals(final KF foreignKey, final KP primaryKey) {
-        if (this.primaryKey == null) {
+    @Override
+    public int hashCode() {
+        return Objects.hash(foreignKey, primaryKey);
+    }
+
+    @Override
+    public boolean equals(final Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        return this.foreignKey.equals(foreignKey) && this.primaryKey.equals(primaryKey);
+        final CombinedKey<?, ?> that = (CombinedKey<?, ?>) o;
+        return Objects.equals(foreignKey, that.foreignKey) && Objects.equals(
+            primaryKey, that.primaryKey);
     }
 
     @Override

@@ -16,28 +16,25 @@
  */
 package org.apache.kafka.common.requests;
 
-import java.nio.ByteBuffer;
-import java.util.Map;
-
 import org.apache.kafka.common.message.ExpireDelegationTokenResponseData;
 import org.apache.kafka.common.protocol.ApiKeys;
 import org.apache.kafka.common.protocol.Errors;
-import org.apache.kafka.common.protocol.types.Struct;
+import org.apache.kafka.common.protocol.Readable;
+
+import java.util.Map;
 
 public class ExpireDelegationTokenResponse extends AbstractResponse {
 
     private final ExpireDelegationTokenResponseData data;
 
     public ExpireDelegationTokenResponse(ExpireDelegationTokenResponseData data) {
+        super(ApiKeys.EXPIRE_DELEGATION_TOKEN);
         this.data = data;
     }
 
-    public ExpireDelegationTokenResponse(Struct struct, short version) {
-        this.data = new ExpireDelegationTokenResponseData(struct, version);
-    }
-
-    public static ExpireDelegationTokenResponse parse(ByteBuffer buffer, short version) {
-        return new ExpireDelegationTokenResponse(ApiKeys.EXPIRE_DELEGATION_TOKEN.responseSchema(version).read(buffer), version);
+    public static ExpireDelegationTokenResponse parse(Readable readable, short version) {
+        return new ExpireDelegationTokenResponse(new ExpireDelegationTokenResponseData(readable,
+            version));
     }
 
     public Errors error() {
@@ -54,8 +51,13 @@ public class ExpireDelegationTokenResponse extends AbstractResponse {
     }
 
     @Override
-    protected Struct toStruct(short version) {
-        return data.toStruct(version);
+    public ExpireDelegationTokenResponseData data() {
+        return data;
+    }
+
+    @Override
+    public void maybeSetThrottleTimeMs(int throttleTimeMs) {
+        data.setThrottleTimeMs(throttleTimeMs);
     }
 
     @Override

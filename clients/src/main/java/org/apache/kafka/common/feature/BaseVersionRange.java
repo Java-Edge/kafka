@@ -16,15 +16,17 @@
  */
 package org.apache.kafka.common.feature;
 
+import org.apache.kafka.common.utils.Utils;
+
 import java.util.Map;
 import java.util.Objects;
 
-import org.apache.kafka.common.utils.Utils;
+import static java.util.stream.Collectors.joining;
 
 /**
  * Represents an immutable basic version range using 2 attributes: min and max, each of type short.
  * The min and max attributes need to satisfy 2 rules:
- *  - they are each expected to be >= 1, as we only consider positive version values to be valid.
+ *  - they are each expected to be >= 0, as we only consider non-negative version values to be valid.
  *  - max should be >= min.
  *
  * The class also provides API to convert the version range to a map.
@@ -46,7 +48,7 @@ class BaseVersionRange {
 
     /**
      * Raises an exception unless the following condition is met:
-     * minValue >= 1 and maxValue >= 1 and maxValue >= minValue.
+     * minValue >= 0 and maxValue >= 0 and maxValue >= minValue.
      *
      * @param minKeyLabel   Label for the min version key, that's used only to convert to/from a map.
      * @param minValue      The minimum version value.
@@ -54,14 +56,14 @@ class BaseVersionRange {
      * @param maxValue      The maximum version value.
      *
      * @throws IllegalArgumentException   If any of the following conditions are true:
-     *                                     - (minValue < 1) OR (maxValue < 1) OR (maxValue < minValue).
+     *                                     - (minValue < 0) OR (maxValue < 0) OR (maxValue < minValue).
      *                                     - minKeyLabel is empty, OR, minKeyLabel is empty.
      */
     protected BaseVersionRange(String minKeyLabel, short minValue, String maxKeyLabel, short maxValue) {
-        if (minValue < 1 || maxValue < 1 || maxValue < minValue) {
+        if (minValue < 0 || maxValue < 0 || maxValue < minValue) {
             throw new IllegalArgumentException(
                 String.format(
-                    "Expected minValue >= 1, maxValue >= 1 and maxValue >= minValue, but received" +
+                    "Expected minValue >= 0, maxValue >= 0 and maxValue >= minValue, but received" +
                     " minValue: %d, maxValue: %d", minValue, maxValue));
         }
         if (minKeyLabel.isEmpty()) {
@@ -84,13 +86,24 @@ class BaseVersionRange {
         return maxValue;
     }
 
+    @Override
     public String toString() {
-        return String.format("%s[%s:%d, %s:%d]",
-            this.getClass().getSimpleName(), this.minKeyLabel, min(), this.maxKeyLabel, max());
+        return String.format(
+            "%s[%s]",
+            this.getClass().getSimpleName(),
+            mapToString(toMap()));
     }
 
     public Map<String, Short> toMap() {
         return Utils.mkMap(Utils.mkEntry(minKeyLabel, min()), Utils.mkEntry(maxKeyLabel, max()));
+    }
+
+    private static String mapToString(final Map<String, Short> map) {
+        return map
+            .entrySet()
+            .stream()
+            .map(entry -> String.format("%s:%d", entry.getKey(), entry.getValue()))
+            .collect(joining(", "));
     }
 
     @Override
@@ -98,7 +111,8 @@ class BaseVersionRange {
         if (this == other) {
             return true;
         }
-        if (!(other instanceof BaseVersionRange)) {
+
+        if (other == null || getClass() != other.getClass()) {
             return false;
         }
 
@@ -117,7 +131,7 @@ class BaseVersionRange {
     public static short valueOrThrow(String key, Map<String, Short> versionRangeMap) {
         final Short value = versionRangeMap.get(key);
         if (value == null) {
-            throw new IllegalArgumentException(key + " absent in " + versionRangeMap);
+            throw new IllegalArgumentException(String.format("%s absent in [%s]", key, mapToString(versionRangeMap)));
         }
         return value;
     }

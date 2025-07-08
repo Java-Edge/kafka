@@ -23,7 +23,9 @@ import org.apache.kafka.streams.TestInputTopic;
 import org.apache.kafka.streams.TestOutputTopic;
 import org.apache.kafka.streams.TopologyTestDriver;
 import org.apache.kafka.test.TestUtils;
-import org.junit.Test;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.Map;
 import java.util.TreeMap;
@@ -31,6 +33,7 @@ import java.util.TreeMap;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 
+@Timeout(600)
 public class RelationalSmokeTestTest extends SmokeTestUtil {
 
     @Test
@@ -42,6 +45,7 @@ public class RelationalSmokeTestTest extends SmokeTestUtil {
                                             "test",
                                             "test",
                                             StreamsConfig.AT_LEAST_ONCE,
+                                            "classic",
                                             TestUtils.tempDirectory().getAbsolutePath()
                                         ))) {
 
